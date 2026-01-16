@@ -289,11 +289,26 @@ async function loadListColumns(){
       'Deadline',
     ];
     APP.fieldInternal.DueDate = resolveInternalName(dueCandidates);
+
+    // Resolve internal name for Link URL / Hyperlink column if present.
+    // NOTE: many SharePoint Lists do NOT have such a column by default.
+    // We keep it optional and only write it when it exists.
+    const linkCandidates = [
+      'LinkUrl',
+      'Link URL',
+      'Lien',
+      'URL',
+      'Url',
+      'Hyperlink',
+      'Lien URL',
+    ];
+    APP.fieldInternal.LinkUrl = resolveInternalName(linkCandidates);
   } catch (e) {
     // If columns can't be loaded (permissions / transient), keep the app usable.
     APP.columns = {};
     APP.columnsNorm = {};
     APP.fieldInternal.DueDate = null;
+    APP.fieldInternal.LinkUrl = null;
     console.warn('loadListColumns failed:', e);
   }
 }
@@ -305,6 +320,25 @@ function resolveInternalName(candidates){
     if (hit) return hit;
   }
   return null;
+}
+
+// Safety net: ensure we only send fields that actually exist on the target list.
+// Graph will reject unknown field keys (400 invalidRequest). This prevents optional
+// columns (e.g., DueDate, LinkUrl) from breaking task creation/update when missing.
+function pruneToKnownColumns(fields){
+  if (!fields || typeof fields !== 'object') return fields;
+  if (!APP.columns || typeof APP.columns !== 'object') return fields;
+  for (const k of Object.keys(fields)) {
+    // Remove undefined to keep payload clean
+    if (fields[k] === undefined) {
+      delete fields[k];
+      continue;
+    }
+    if (!Object.prototype.hasOwnProperty.call(APP.columns, k)) {
+      delete fields[k];
+    }
+  }
+  return fields;
 }
 
 
@@ -334,12 +368,29 @@ async function graphFetchWithUnknownFieldRetry(url, options, ctxLabel=''){
     if (!unknown) throw e;
 
     // Try stripping the unknown field from payload and retry once.
+    // Also supports minor variations (e.g., "Link URL" vs "LinkUrl").
     try {
       const body = options?.body ? JSON.parse(options.body) : null;
-      if (body?.fields && Object.prototype.hasOwnProperty.call(body.fields, unknown)) {
-        delete body.fields[unknown];
-        toast(`Champ "${unknown}" absent dans la liste : valeur ignorée.`, 'warn');
-        return await graphFetch(url, { ...options, body: JSON.stringify(body) });
+      if (body?.fields) {
+        let stripped = false;
+        // Exact match
+        if (Object.prototype.hasOwnProperty.call(body.fields, unknown)) {
+          delete body.fields[unknown];
+          stripped = true;
+        } else {
+          // Normalized match (handles spaces, casing, accents)
+          const unkNorm = normKey(unknown);
+          for (const k of Object.keys(body.fields)) {
+            if (normKey(k) === unkNorm) {
+              delete body.fields[k];
+              stripped = true;
+            }
+          }
+        }
+        if (stripped) {
+          toast(`Champ "${unknown}" absent dans la liste : valeur ignorée.`, 'warn');
+          return await graphFetch(url, { ...options, body: JSON.stringify(body) });
+        }
       }
     } catch {}
 
@@ -441,10 +492,13 @@ function mapToFields(task){
   }
   fields[FIELD.Priority] = task.priority;
   fields[FIELD.Notes] = task.notes || '';
+  // Link URL is optional. We ONLY write it when a value is provided AND the list supports a hyperlink column.
+  // Many lists do not have this column; sending an unknown key breaks creation.
+  const linkInternal = APP.fieldInternal?.LinkUrl;
   if (task.linkUrl) {
-    fields[FIELD.LinkUrl] = { Url: task.linkUrl, Description: '' };
-  } else {
-    fields[FIELD.LinkUrl] = null;
+    if (linkInternal) {
+      fields[linkInternal] = { Url: task.linkUrl, Description: '' };
+    }
   }
   fields[FIELD.SortOrder] = Number(task.sortOrder ?? 0);
   return fields;
@@ -478,7 +532,21 @@ async function updateTaskFields(itemId, partialFields){
     }
   }
 
+  // Bulletproof: remap LinkUrl to the actual internal field name if present; otherwise drop it.
+  if (partialFields && Object.prototype.hasOwnProperty.call(partialFields, FIELD.LinkUrl)) {
+    const val = partialFields[FIELD.LinkUrl];
+    delete partialFields[FIELD.LinkUrl];
+    const linkInternal = APP.fieldInternal?.LinkUrl;
+    if (linkInternal && val) {
+      partialFields[linkInternal] = { Url: val, Description: '' };
+    } else if (val) {
+      toast('Champ Lien/URL absent : valeur ignorée.', 'warn');
+    }
+  }
+
   const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/items/${encodeURIComponent(itemId)}/fields`;
+  // Final safety net: remove any remaining unknown keys before sending.
+  pruneToKnownColumns(partialFields);
   await graphFetchWithUnknownFieldRetry(url, { method: 'PATCH', body: JSON.stringify(partialFields) }, 'update');
 }
 
@@ -487,10 +555,25 @@ async function createTask(task){
   if (task?.dueDate && !APP.fieldInternal?.DueDate) {
     toast('Colonne Échéance absente : date ignorée (tâche créée quand même).', 'warn');
   }
+  if (task?.linkUrl && !APP.fieldInternal?.LinkUrl) {
+    toast('Champ Lien/URL absent : valeur ignorée (tâche créée quand même).', 'warn');
+  }
 
   const { siteId, listId } = APP.cfg;
   const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/items`;
   const body = { fields: mapToFields(task) };
+  // Extra bulletproof: if no link is provided, make sure NO link-like field is sent
+  // (some older builds or tenant-specific fields can otherwise trigger a 400).
+  if (!task?.linkUrl && body?.fields) {
+    const linkNorm = normKey(FIELD.LinkUrl);
+    for (const k of Object.keys(body.fields)) {
+      if (normKey(k) === linkNorm) {
+        delete body.fields[k];
+      }
+    }
+  }
+  // Final safety net: remove unknown keys (e.g., LinkUrl) when the list doesn't have the column.
+  pruneToKnownColumns(body.fields);
   const created = await graphFetchWithUnknownFieldRetry(url, { method: 'POST', body: JSON.stringify(body) }, 'create');
   const mapped = mapFromListItem(created);
   APP.tasks.push(mapped);
