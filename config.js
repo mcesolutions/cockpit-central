@@ -4,10 +4,10 @@ window.COCKPIT_CONFIG = {
   appName: "Cockpit Central",
 
   // Microsoft Entra ID (Azure AD) App Registration (SPA)
-  // Redirect URI: https://vercel.com/martins-projects-96b96d99/cockpit-central/4Sg5VYkdjuSpdMgyguKbrZb3GrfM
+  // Redirect URI: https://bcsjoliette.sharepoint.com/sites/SolutionsEvolumis/Shared%20Documents/CockpitCentral/index.html
   tenantId: "bd2452f8-ef2b-4ddf-a972-a0bcc233768a",
   clientId: "edd4c435-217e-4f81-9d7a-1a1e53fe9de3",
-  redirectUri: "https://vercel.com/martins-projects-96b96d99/cockpit-central/4Sg5VYkdjuSpdMgyguKbrZb3GrfM",
+  redirectUri: "https://bcsjoliette.sharepoint.com/sites/SolutionsEvolumis/Shared%20Documents/CockpitCentral/index.html",
 
   // SharePoint list backend (Microsoft Lists)
   // SiteId (Graph): hostname,siteCollectionId,siteId
