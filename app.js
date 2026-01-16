@@ -255,6 +255,98 @@ const FIELD = {
   SortOrder: 'SortOrder',
 };
 
+
+// Runtime column discovery (bulletproof): we only write optional fields if they exist in the target list.
+APP.columns = null;
+APP.columnsNorm = null;
+APP.fieldInternal = APP.fieldInternal || {};
+
+async function loadListColumns(){
+  if (APP.columns && APP.columnsNorm) return;
+  const { siteId, listId } = APP.cfg;
+  const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/columns?$select=name,displayName`;
+  try {
+    const data = await graphFetch(url, { method: 'GET' });
+    const cols = data?.value || [];
+    APP.columns = {};
+    APP.columnsNorm = {};
+    for (const c of cols) {
+      if (!c?.name) continue;
+      APP.columns[c.name] = c.displayName || c.name;
+      // normalize internal name and display name for tolerant matching
+      APP.columnsNorm[normKey(c.name)] = c.name;
+      if (c.displayName) APP.columnsNorm[normKey(c.displayName)] = c.name;
+    }
+
+    // Resolve internal name for Due Date if present (French/English variants)
+    const dueCandidates = [
+      'Echeance',
+      'Échéance',
+      "Date d'échéance",
+      'Date echeance',
+      'Due date',
+      'DueDate',
+      'Deadline',
+    ];
+    APP.fieldInternal.DueDate = resolveInternalName(dueCandidates);
+  } catch (e) {
+    // If columns can't be loaded (permissions / transient), keep the app usable.
+    APP.columns = {};
+    APP.columnsNorm = {};
+    APP.fieldInternal.DueDate = null;
+    console.warn('loadListColumns failed:', e);
+  }
+}
+
+function resolveInternalName(candidates){
+  if (!APP.columnsNorm) return null;
+  for (const c of candidates) {
+    const hit = APP.columnsNorm[normKey(c)];
+    if (hit) return hit;
+  }
+  return null;
+}
+
+
+function extractUnknownFieldName(err){
+  const msg = String(err?.message || err || '');
+  // Typical Graph error: Field 'DueDate' is not recognized
+  const m = msg.match(/Field\s+'([^']+)'\s+is\s+not\s+recognized/i);
+  if (m) return m[1];
+  // Sometimes the JSON is embedded after a ':'
+  const idx = msg.indexOf('{"error"');
+  if (idx >= 0) {
+    try {
+      const j = JSON.parse(msg.slice(idx));
+      const message = j?.error?.message;
+      const m2 = String(message || '').match(/Field\s+'([^']+)'\s+is\s+not\s+recognized/i);
+      if (m2) return m2[1];
+    } catch {}
+  }
+  return null;
+}
+
+async function graphFetchWithUnknownFieldRetry(url, options, ctxLabel=''){ 
+  try {
+    return await graphFetch(url, options);
+  } catch (e) {
+    const unknown = extractUnknownFieldName(e);
+    if (!unknown) throw e;
+
+    // Try stripping the unknown field from payload and retry once.
+    try {
+      const body = options?.body ? JSON.parse(options.body) : null;
+      if (body?.fields && Object.prototype.hasOwnProperty.call(body.fields, unknown)) {
+        delete body.fields[unknown];
+        toast(`Champ "${unknown}" absent dans la liste : valeur ignorée.`, 'warn');
+        return await graphFetch(url, { ...options, body: JSON.stringify(body) });
+      }
+    } catch {}
+
+    throw e;
+  }
+}
+
 // Fields in Microsoft Lists can have different internal names depending on how they were created.
 // This helper tries the preferred key(s) first, then falls back to a normalized match on any field key.
 function pickField(fields, preferredKeys){
@@ -337,7 +429,16 @@ function mapToFields(task){
   fields[FIELD.Title] = task.title;
   fields[FIELD.Pole] = task.pole;
   fields[FIELD.Status] = task.status;
-  fields[FIELD.DueDate] = task.dueDate || null;
+  // Due date is optional. Only write if the list has a compatible column.
+  if (task.dueDate) {
+    const dueInternal = APP.fieldInternal?.DueDate;
+    if (dueInternal) {
+      fields[dueInternal] = task.dueDate;
+    } else {
+      // Keep task creation/update functional even if the tenant/list doesn't have a due date column.
+      // (No throw; we simply ignore the due date.)
+    }
+  }
   fields[FIELD.Priority] = task.priority;
   fields[FIELD.Notes] = task.notes || '';
   if (task.linkUrl) {
@@ -350,6 +451,7 @@ function mapToFields(task){
 }
 
 async function loadTasks(){
+  await loadListColumns();
   const { siteId, listId } = APP.cfg;
   // IMPORTANT: $expand must be prefixed with '$' otherwise Graph ignores it.
   const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/items?$top=500&$expand=fields`;
@@ -361,16 +463,35 @@ async function loadTasks(){
 }
 
 async function updateTaskFields(itemId, partialFields){
+  await loadListColumns();
   const { siteId, listId } = APP.cfg;
+
+  // Bulletproof: remap DueDate to the actual internal field name if present; otherwise drop it.
+  if (partialFields && Object.prototype.hasOwnProperty.call(partialFields, FIELD.DueDate)) {
+    const val = partialFields[FIELD.DueDate];
+    delete partialFields[FIELD.DueDate];
+    const dueInternal = APP.fieldInternal?.DueDate;
+    if (dueInternal) {
+      partialFields[dueInternal] = val;
+    } else {
+      toast('Colonne Échéance absente : date ignorée.', 'warn');
+    }
+  }
+
   const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/items/${encodeURIComponent(itemId)}/fields`;
-  await graphFetch(url, { method: 'PATCH', body: JSON.stringify(partialFields) });
+  await graphFetchWithUnknownFieldRetry(url, { method: 'PATCH', body: JSON.stringify(partialFields) }, 'update');
 }
 
 async function createTask(task){
+  await loadListColumns();
+  if (task?.dueDate && !APP.fieldInternal?.DueDate) {
+    toast('Colonne Échéance absente : date ignorée (tâche créée quand même).', 'warn');
+  }
+
   const { siteId, listId } = APP.cfg;
   const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/items`;
   const body = { fields: mapToFields(task) };
-  const created = await graphFetch(url, { method: 'POST', body: JSON.stringify(body) });
+  const created = await graphFetchWithUnknownFieldRetry(url, { method: 'POST', body: JSON.stringify(body) }, 'create');
   const mapped = mapFromListItem(created);
   APP.tasks.push(mapped);
   return mapped;
