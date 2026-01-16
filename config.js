@@ -4,10 +4,10 @@ window.COCKPIT_CONFIG = {
   appName: "Cockpit Central",
 
   // Microsoft Entra ID (Azure AD) App Registration (SPA)
-  // Redirect URI: http://localhost:5173
+  // Redirect URI: http://localhost:5173/ (dev) AND https://cockpit-central.vercel.app/ (prod)
   tenantId: "bd2452f8-ef2b-4ddf-a972-a0bcc233768a",
   clientId: "edd4c435-217e-4f81-9d7a-1a1e53fe9de3",
-  redirectUri: "http://localhost:5173",
+  redirectUri: window.location.origin + "/",
 
   // SharePoint list backend (Microsoft Lists)
   // SiteId (Graph): hostname,siteCollectionId,siteId
@@ -17,8 +17,8 @@ window.COCKPIT_CONFIG = {
   // Quick links
   links: {
     // Ajuste ces URLs si tu veux pointer vers des apps spécifiques
-    bienChezSoiApp: "https://bcsjoliette.sharepoint.com",
-    evolumisApp: "https://bcsjoliette.sharepoint.com/sites/SolutionsEvolumis",
+    bienChezSoiApp: "http://localhost:3000/",
+    evolumisApp: "http://localhost:3001/",
     persoApp: "https://outlook.office.com/todo/",
 
     // SharePoint folder (web URL)
@@ -44,8 +44,8 @@ window.COCKPIT_CONFIG = {
   ],
 
   priorities: [
-    { key: "P1", label: "P1" },
-    { key: "P2", label: "P2" },
-    { key: "P3", label: "P3" },
+    { key: "P1", label: "Urgent" },
+    { key: "P2", label: "Normal" },
+    { key: "P3", label: "Un jour" },
   ],
 };

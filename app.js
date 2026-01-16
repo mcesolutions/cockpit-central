@@ -44,6 +44,40 @@ const APP = {
   drag: { taskId: null, fromStatus: null },
 };
 
+// Microsoft Graph scopes required for Lists (delegated)
+const GRAPH_SCOPES = ['User.Read','Sites.ReadWrite.All'];
+
+function msalInteractionKey(){
+  try {
+    const cid = APP?.cfg?.clientId || window?.COCKPIT_CONFIG?.clientId || '';
+    return cid ? `msal.${cid}.interaction.status` : null;
+  } catch { return null; }
+}
+
+function isInteractionInProgress(){
+  const k = msalInteractionKey();
+  if (!k) return false;
+  try {
+    return sessionStorage.getItem(k) === 'interaction_in_progress';
+  } catch { return false; }
+}
+
+function clearStaleInteractionFlag(){
+  const k = msalInteractionKey();
+  if (!k) return;
+  try {
+    const v = sessionStorage.getItem(k);
+    if (v !== 'interaction_in_progress') return;
+
+    // If there's no MSAL response in the URL hash, consider the flag stale and clear it.
+    const h = String(location.hash || '');
+    const looksLikeMsalResponse = h.startsWith('#code=') || h.startsWith('#error=') || h.includes('client_info=') || h.includes('state=');
+    if (!looksLikeMsalResponse) {
+      sessionStorage.removeItem(k);
+    }
+  } catch {}
+}
+
 function getCfg(){
   const cfg = window.COCKPIT_CONFIG;
   if (!cfg) return null;
@@ -105,40 +139,48 @@ async function initAuth(){
 
   // Handle redirect login
   await APP.msal.initialize?.();
-  const resp = await APP.msal.handleRedirectPromise?.();
+
+  // If an interaction was started but never completed (e.g., user canceled or redirectUri mismatch),
+  // MSAL can get stuck in interaction_in_progress. Clear stale flags before processing redirect.
+  clearStaleInteractionFlag();
+
+  let resp = null;
+  try {
+    resp = await APP.msal.handleRedirectPromise?.();
+  } catch (e) {
+    console.warn('MSAL redirect handling failed (non-blocking)', e);
+  }
   if (resp && resp.account) APP.account = resp.account;
   const accounts = APP.msal.getAllAccounts();
   if (!APP.account && accounts && accounts.length) APP.account = accounts[0];
+
+  // MSAL (responseMode=fragment) returns auth data in the URL hash (e.g. #code=...).
+  // Our router also uses the hash (#/...). After successful redirect handling, restore the prior route.
+  const h = String(location.hash || '');
+  if (h.startsWith('#code=') || h.startsWith('#error=') || h.includes('client_info=')) {
+    const saved = sessionStorage.getItem('cc_post_login_hash');
+    if (saved) sessionStorage.removeItem('cc_post_login_hash');
+    location.hash = (saved && saved.startsWith('#/')) ? saved : '#/';
+  }
+
+  // Keep MSAL's active account aligned with our state
+  if (APP.account && APP.msal.setActiveAccount) {
+    APP.msal.setActiveAccount(APP.account);
+  }
 }
 
 async function login(){
-  const scopes = ['User.Read','Sites.ReadWrite.All'];
-  try {
-    // Prefer popup for SPA so we don't lose app state on static hosting
-    let resp = null;
-    if (APP.msal.loginPopup) {
-      resp = await APP.msal.loginPopup({ scopes });
-    } else {
-      await APP.msal.loginRedirect({ scopes });
-      return;
-    }
-    // Rehydrate account
-    if (resp && resp.account) APP.account = resp.account;
-    if (!APP.account) {
-      const accounts = APP.msal.getAllAccounts?.() || [];
-      if (accounts.length) APP.account = accounts[0];
-    }
-    toast('Connecté ✅', 'good');
-  } catch (e) {
-    console.error(e);
-    // Fallback to redirect if popup blocked
-    try {
-      await APP.msal.loginRedirect({ scopes });
-    } catch (e2) {
-      console.error(e2);
-      toast('Échec de connexion', 'bad');
-    }
+  if (isInteractionInProgress()) {
+    toast('Connexion en cours…', 'info');
+    return;
   }
+  // Use redirect flow for maximum reliability (no stuck popup window)
+  // Note: after redirect, initAuth() will process the response and set APP.account.
+  try {
+    // Remember where the user was before redirect.
+    sessionStorage.setItem('cc_post_login_hash', location.hash || '#/');
+  } catch (_) {}
+  await APP.msal.loginRedirect({ scopes: GRAPH_SCOPES });
 }
 
 async function logout(){
@@ -150,7 +192,7 @@ async function logout(){
 }
 
 async function getToken(){
-  const scopes = ['User.Read','Sites.ReadWrite.All'];
+  const scopes = GRAPH_SCOPES;
   const now = Date.now();
 
   // If we already have a cached token, reuse it
@@ -160,6 +202,11 @@ async function getToken(){
   if (!APP.account && APP.msal?.getAllAccounts) {
     const accounts = APP.msal.getAllAccounts();
     if (accounts && accounts.length) APP.account = accounts[0];
+  }
+
+  // Align active account
+  if (APP.account && APP.msal?.setActiveAccount) {
+    APP.msal.setActiveAccount(APP.account);
   }
 
   // If still not connected, trigger interactive login once
@@ -173,19 +220,12 @@ async function getToken(){
     APP.tokenExpiresAt = resp.expiresOn ? resp.expiresOn.getTime() : (now + 45*60*1000);
     return APP.token;
   } catch (e) {
-    // Fallback interactive (popup preferred)
-    try {
-      const resp = await APP.msal.acquireTokenPopup({ scopes, account: APP.account });
-      APP.token = resp.accessToken;
-      APP.tokenExpiresAt = resp.expiresOn ? resp.expiresOn.getTime() : (Date.now() + 45*60*1000);
-      // Refresh account in case MSAL picked a different one
-      if (resp && resp.account) APP.account = resp.account;
-      return APP.token;
-    } catch (e2) {
-      // Final fallback redirect
-      await APP.msal.acquireTokenRedirect({ scopes, account: APP.account });
-      throw e2;
+    // Final fallback: redirect (most reliable on static hosting)
+    if (isInteractionInProgress()) {
+      throw new Error('Connexion en cours. Termine l\'authentification (onglet Microsoft), puis réessaie.');
     }
+    await APP.msal.acquireTokenRedirect({ scopes, account: APP.account });
+    throw e;
   }
 }
 
@@ -215,18 +255,79 @@ const FIELD = {
   SortOrder: 'SortOrder',
 };
 
+// Fields in Microsoft Lists can have different internal names depending on how they were created.
+// This helper tries the preferred key(s) first, then falls back to a normalized match on any field key.
+function pickField(fields, preferredKeys){
+  for (const k of preferredKeys) {
+    if (fields && fields[k] != null && fields[k] !== '') return fields[k];
+  }
+  if (!fields) return undefined;
+  const want = new Set(preferredKeys.map(normKey));
+  for (const k of Object.keys(fields)) {
+    if (want.has(normKey(k))) {
+      const v = fields[k];
+      if (v != null && v !== '') return v;
+    }
+  }
+  return undefined;
+}
+
+function normKey(v){
+  return String(v ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function normalizePole(raw){
+  const s = normKey(raw);
+  if (!s) return '';
+  if (s === 'bcs' || s.includes('bien') || s.includes('chez') || s.includes('soi')) return 'BCS';
+  if (s === 'evo' || s.includes('evolumis')) return 'EVO';
+  if (s === 'perso' || s === 'personnel' || s === 'personal' || s.includes('perso')) return 'PERSO';
+  return String(raw).trim();
+}
+
+function normalizeStatus(raw){
+  const s = normKey(raw);
+  if (!s) return 'Backlog';
+  if (s === 'backlog' || s === 'todo' || s.includes('a faire') || s.includes('to do')) return 'Backlog';
+  if (s === 'encours' || s.includes('en cours') || s.includes('in progress')) return 'EnCours';
+  if (s === 'enattente' || s.includes('en attente') || s.includes('waiting') || s.includes('blocked')) return 'EnAttente';
+  if (s === 'termine' || s.includes('termine') || s.includes('done') || s.includes('completed')) return 'Termine';
+  return String(raw).trim();
+}
+
+function normalizePriority(raw){
+  const s = normKey(raw);
+  if (!s) return 'P2';
+  if (s === 'p1' || s === '1' || s.includes('urgent') || s.includes('crit')) return 'P1';
+  if (s === 'p2' || s === '2' || s.includes('high')) return 'P2';
+  if (s === 'p3' || s === '3' || s.includes('low')) return 'P3';
+  return String(raw).trim();
+}
+
 function mapFromListItem(item){
   const f = item.fields || {};
+  const title = pickField(f, [FIELD.Title, 'Title', 'Titre']);
+  const pole = pickField(f, [FIELD.Pole, 'Pole', 'Pôle', 'PoleKey', 'PoleId']);
+  const status = pickField(f, [FIELD.Status, 'Status', 'Statut']);
+  const dueDate = pickField(f, [FIELD.DueDate, 'DueDate', 'Echeance', 'Échéance', 'Echéance', 'Due', 'Date']);
+  const priority = pickField(f, [FIELD.Priority, 'Priority', 'Priorite', 'Priorité']);
+  const notes = pickField(f, [FIELD.Notes, 'Notes', 'Note', 'Commentaires', 'Commentaire']);
+  const sortOrder = pickField(f, [FIELD.SortOrder, 'SortOrder', 'Order', 'Ordre']);
+  const link = pickField(f, [FIELD.LinkUrl, 'LinkUrl', 'Lien', 'URL', 'Url']);
   return {
     id: item.id,
-    title: f[FIELD.Title] || f.Title || '',
-    pole: f[FIELD.Pole] || '',
-    status: f[FIELD.Status] || 'Backlog',
-    dueDate: f[FIELD.DueDate] || '',
-    priority: f[FIELD.Priority] || 'P2',
-    notes: f[FIELD.Notes] || '',
-    linkUrl: (f[FIELD.LinkUrl] && (f[FIELD.LinkUrl].Url || f[FIELD.LinkUrl])) || f[FIELD.LinkUrl] || '',
-    sortOrder: Number(f[FIELD.SortOrder] ?? 0),
+    title: title || '',
+    pole: normalizePole(pole || ''),
+    status: normalizeStatus(status || 'Backlog'),
+    dueDate: dueDate || '',
+    priority: normalizePriority(priority || 'P2'),
+    notes: notes || '',
+    linkUrl: (link && (link.Url || link.url || link)) || '',
+    sortOrder: Number(sortOrder ?? 0),
     raw: item,
   };
 }
@@ -250,7 +351,8 @@ function mapToFields(task){
 
 async function loadTasks(){
   const { siteId, listId } = APP.cfg;
-  const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/items?expand=fields`;
+  // IMPORTANT: $expand must be prefixed with '$' otherwise Graph ignores it.
+  const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/items?$top=500&$expand=fields`;
   const data = await graphFetch(url);
   const items = (data.value || []).map(mapFromListItem);
   // default sort
@@ -750,8 +852,16 @@ function render(){
   if (btnRefresh) btnRefresh.addEventListener('click', async () => {
     try {
       if (!APP.account) { await login(); }
-          await loadTasks();
-          toast('Synchronisé ✅', 'good');
+      await loadTasks();
+      const total = APP.tasks.length;
+      const classified = APP.tasks.filter(t => !!t.pole).length;
+      if (total === 0) {
+        toast('Sync OK, mais 0 tâche trouvée. (Vérifie la liste / accès)', 'warn');
+      } else if (classified === 0) {
+        toast(`Sync OK (${total}). Aucune tâche classée par pôle — vérifie la colonne "Pole".`, 'warn');
+      } else {
+        toast(`Synchronisé ✅ (${total})`, 'good');
+      }
       render();
     } catch (e) {
       console.error(e);
