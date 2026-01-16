@@ -139,6 +139,12 @@ function ensureModalStyles(){
   .cc-label{font-size:12px;color:rgba(255,255,255,.7)}
   .cc-input,.cc-textarea,.cc-select{border-radius:14px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:#fff;padding:12px 12px;font:inherit;outline:none}
   .cc-input:focus,.cc-textarea:focus,.cc-select:focus{border-color:rgba(115,233,255,.35);box-shadow:0 0 0 4px rgba(83,199,255,.12)}
+  .cc-datewrap{position:relative;display:flex;gap:10px;align-items:center}
+  .cc-datewrap .cc-input{flex:1}
+  .cc-datebtn{width:44px;height:44px;border-radius:14px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:#fff;cursor:pointer;display:grid;place-items:center}
+  .cc-datebtn:hover{background:rgba(255,255,255,.10)}
+  .cc-datebtn:disabled{opacity:.45;cursor:not-allowed}
+  .cc-datepick{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
   .cc-textarea{min-height:98px;resize:vertical}
   .cc-help{font-size:12px;color:rgba(255,255,255,.55)}
   .cc-req{color:rgba(255,150,140,.95);font-weight:700;margin-left:6px}
@@ -218,9 +224,13 @@ function openNewTaskModal(poleKey){
 
           <div class="cc-field">
             <div class="cc-label">Échéance</div>
-            <input class="cc-input" type="date" name="due" ${APP.fieldInternal?.DueDate ? '' : 'disabled'} />
+            <div class="cc-datewrap">
+              <input class="cc-input" type="text" name="due" inputmode="numeric" placeholder="aaaa-MM-jj" autocomplete="off" ${APP.fieldInternal?.DueDate ? '' : 'disabled'} />
+              <button class="cc-datebtn" type="button" data-datebtn title="Choisir une date" ${APP.fieldInternal?.DueDate ? '' : 'disabled'}>${icon('calendar')}</button>
+              <input class="cc-datepick" type="date" name="duePicker" ${APP.fieldInternal?.DueDate ? '' : 'disabled'} />
+            </div>
             ${APP.fieldInternal?.DueDate
-              ? `<div class="cc-help">Optionnel — mais très utile pour sortir des surprises du calendrier.</div>`
+              ? `<div class="cc-help">Optionnel — calendrier au clic ou saisie manuelle au format <b>aaaa-MM-jj</b>.</div>`
               : `<div class="cc-help">Colonne Échéance non détectée dans la liste : ce champ est désactivé.</div>`
             }
           </div>
@@ -249,6 +259,72 @@ function openNewTaskModal(poleKey){
     const titleEl = backdrop.querySelector('input[name="title"]');
     const errEl = backdrop.querySelector('[data-err]');
 
+    const dueTextEl = backdrop.querySelector('input[name="due"]');
+    const duePickerEl = backdrop.querySelector('input[name="duePicker"]');
+    const dueBtnEl = backdrop.querySelector('[data-datebtn]');
+
+    const isValidISODate = (s) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+      const d = new Date(s + 'T00:00:00Z');
+      if (isNaN(d.getTime())) return false;
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth()+1).padStart(2,'0');
+      const da = String(d.getUTCDate()).padStart(2,'0');
+      return `${y}-${m}-${da}` === s;
+    };
+
+    const syncDueTextToPicker = () => {
+      if (!dueTextEl || !duePickerEl) return;
+      const v = String(dueTextEl.value || '').trim();
+      if (!v) { duePickerEl.value = ''; return; }
+      if (isValidISODate(v)) duePickerEl.value = v;
+    };
+
+    const syncDuePickerToText = () => {
+      if (!dueTextEl || !duePickerEl) return;
+      if (duePickerEl.value) dueTextEl.value = duePickerEl.value;
+    };
+
+    if (dueBtnEl && duePickerEl) {
+      dueBtnEl.addEventListener('click', () => {
+        if (duePickerEl.disabled) return;
+        try {
+          if (typeof duePickerEl.showPicker === 'function') {
+            duePickerEl.showPicker();
+          } else {
+            duePickerEl.focus();
+            duePickerEl.click();
+          }
+        } catch {
+          try { duePickerEl.focus(); duePickerEl.click(); } catch {}
+        }
+      });
+    }
+
+    if (duePickerEl) {
+      duePickerEl.addEventListener('change', () => {
+        syncDuePickerToText();
+      });
+    }
+
+    if (dueTextEl) {
+      // If user types manually, keep picker in sync when format is valid
+      dueTextEl.addEventListener('input', () => {
+        syncDueTextToPicker();
+      });
+      dueTextEl.addEventListener('blur', () => {
+        const v = String(dueTextEl.value || '').trim();
+        if (!v) { if (duePickerEl) duePickerEl.value=''; return; }
+        if (!isValidISODate(v)) {
+          toast('Format attendu pour Échéance : aaaa-MM-jj', 'warn');
+          dueTextEl.focus();
+          dueTextEl.select?.();
+          return;
+        }
+        syncDueTextToPicker();
+      });
+    }
+
     const setActive = (segName, value) => {
       backdrop.querySelectorAll(`[data-seg="${segName}"] .cc-chip`).forEach(ch => {
         ch.dataset.active = (ch.dataset.value === value) ? '1' : '0';
@@ -276,11 +352,12 @@ function openNewTaskModal(poleKey){
 
       const status = (backdrop.querySelector('input[name="status"]:checked')?.value) || defaultStatus;
       const priority = (backdrop.querySelector('input[name="priority"]:checked')?.value) || defaultPriority;
-      const due = (backdrop.querySelector('input[name="due"]')?.value) || '';
+      const dueRaw = (dueTextEl?.value) || (duePickerEl?.value) || '';
+      const due = String(dueRaw || '').trim();
       const notes = String(backdrop.querySelector('textarea[name="notes"]')?.value || '').trim();
 
       // Store due date as ISO-ish for Graph; keep it simple for SharePoint date columns
-      const dueDate = due ? `${due}T00:00:00Z` : '';
+      const dueDate = (due && isValidISODate(due)) ? `${due}T00:00:00Z` : '';
 
       close();
       resolve({
