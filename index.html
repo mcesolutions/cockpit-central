@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cockpit Central</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="./styles.css" />
+
+  <!-- MSAL (Microsoft CDN) -->
+  <!-- If you need to update versions, see README. -->
+  <script defer src="https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js"></script>
+
+  <script defer src="./config.js"></script>
+  <script type="module" defer src="./app.js"></script>
+</head>
+<body>
+  <div id="app">
+    <div class="boot">
+      <div class="spinner"></div>
+      <div class="boot__title">Cockpit Central</div>
+      <div class="boot__sub">Chargement…</div>
+    </div>
+  </div>
+
+  <noscript>Active JavaScript pour utiliser l'application.</noscript>
+</body>
+</html>
