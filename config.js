@@ -4,10 +4,10 @@ window.COCKPIT_CONFIG = {
   appName: "Cockpit Central",
 
   // Microsoft Entra ID (Azure AD) App Registration (SPA)
-  // Redirect URI: https://bcsjoliette.sharepoint.com/sites/SolutionsEvolumis/Shared%20Documents/CockpitCentral/index.html
+  // Redirect URI: http://localhost:5173
   tenantId: "bd2452f8-ef2b-4ddf-a972-a0bcc233768a",
   clientId: "edd4c435-217e-4f81-9d7a-1a1e53fe9de3",
-  redirectUri: "https://bcsjoliette.sharepoint.com/sites/SolutionsEvolumis/Shared%20Documents/CockpitCentral/index.html",
+  redirectUri: "http://localhost:5173",
 
   // SharePoint list backend (Microsoft Lists)
   // SiteId (Graph): hostname,siteCollectionId,siteId

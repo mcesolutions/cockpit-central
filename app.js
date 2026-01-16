@@ -114,10 +114,30 @@ async function initAuth(){
 async function login(){
   const scopes = ['User.Read','Sites.ReadWrite.All'];
   try {
-    await APP.msal.loginRedirect({ scopes });
+    // Prefer popup for SPA so we don't lose app state on static hosting
+    let resp = null;
+    if (APP.msal.loginPopup) {
+      resp = await APP.msal.loginPopup({ scopes });
+    } else {
+      await APP.msal.loginRedirect({ scopes });
+      return;
+    }
+    // Rehydrate account
+    if (resp && resp.account) APP.account = resp.account;
+    if (!APP.account) {
+      const accounts = APP.msal.getAllAccounts?.() || [];
+      if (accounts.length) APP.account = accounts[0];
+    }
+    toast('Connecté ✅', 'good');
   } catch (e) {
     console.error(e);
-    toast('Échec de connexion', 'bad');
+    // Fallback to redirect if popup blocked
+    try {
+      await APP.msal.loginRedirect({ scopes });
+    } catch (e2) {
+      console.error(e2);
+      toast('Échec de connexion', 'bad');
+    }
   }
 }
 
@@ -132,18 +152,40 @@ async function logout(){
 async function getToken(){
   const scopes = ['User.Read','Sites.ReadWrite.All'];
   const now = Date.now();
+
+  // If we already have a cached token, reuse it
   if (APP.token && now < APP.tokenExpiresAt - 30_000) return APP.token;
-  if (!APP.account) throw new Error('Non connecté');
+
+  // Rehydrate account from MSAL cache if needed (common after refresh)
+  if (!APP.account && APP.msal?.getAllAccounts) {
+    const accounts = APP.msal.getAllAccounts();
+    if (accounts && accounts.length) APP.account = accounts[0];
+  }
+
+  // If still not connected, trigger interactive login once
+  if (!APP.account) {
+    throw new Error('Non connecté');
+  }
+
   try {
     const resp = await APP.msal.acquireTokenSilent({ scopes, account: APP.account });
     APP.token = resp.accessToken;
     APP.tokenExpiresAt = resp.expiresOn ? resp.expiresOn.getTime() : (now + 45*60*1000);
     return APP.token;
   } catch (e) {
-    // fallback interactive
-    const resp = await APP.msal.acquireTokenRedirect({ scopes, account: APP.account });
-    if (resp && resp.accessToken) return resp.accessToken;
-    throw e;
+    // Fallback interactive (popup preferred)
+    try {
+      const resp = await APP.msal.acquireTokenPopup({ scopes, account: APP.account });
+      APP.token = resp.accessToken;
+      APP.tokenExpiresAt = resp.expiresOn ? resp.expiresOn.getTime() : (Date.now() + 45*60*1000);
+      // Refresh account in case MSAL picked a different one
+      if (resp && resp.account) APP.account = resp.account;
+      return APP.token;
+    } catch (e2) {
+      // Final fallback redirect
+      await APP.msal.acquireTokenRedirect({ scopes, account: APP.account });
+      throw e2;
+    }
   }
 }
 
@@ -507,8 +549,9 @@ function viewPole(poleKey){
       const task = { title, pole: poleKey, status: 'Backlog', dueDate: null, priority: 'P2', notes: '', linkUrl: '', sortOrder: Date.now() };
       try {
         await createTask(task);
-        await loadTasks();
-        toast('Tâche créée ✅', 'good');
+        if (!APP.account) { await login(); }
+          await loadTasks();
+          toast('Tâche créée ✅', 'good');
         render();
       } catch (e) {
         console.error(e);
@@ -564,6 +607,7 @@ function viewPoleKanban(tasks){
         const newStatus = zone.dataset.status;
         try {
           await updateTaskFields(id, { [FIELD.Status]: newStatus });
+          if (!APP.account) { await login(); }
           await loadTasks();
           toast('Mise à jour ✅', 'good');
           render();
@@ -705,8 +749,9 @@ function render(){
   if (btnLogout) btnLogout.addEventListener('click', () => logout());
   if (btnRefresh) btnRefresh.addEventListener('click', async () => {
     try {
-      await loadTasks();
-      toast('Synchronisé ✅', 'good');
+      if (!APP.account) { await login(); }
+          await loadTasks();
+          toast('Synchronisé ✅', 'good');
       render();
     } catch (e) {
       console.error(e);
