@@ -120,6 +120,200 @@ function toast(msg, type='info'){
   setTimeout(() => t.remove(), 3800);
 }
 
+// --- Modal (Nouvelle tâche) -------------------------------------------------
+function ensureModalStyles(){
+  if (document.getElementById('cc-modal-styles')) return;
+  const s = document.createElement('style');
+  s.id = 'cc-modal-styles';
+  s.textContent = `
+  .cc-modal-backdrop{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(8,12,18,.68);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);z-index:9999}
+  .cc-modal{width:min(760px,96vw);border-radius:22px;border:1px solid rgba(255,255,255,.12);background:linear-gradient(180deg,rgba(18,24,36,.92),rgba(10,14,22,.92));box-shadow:0 30px 90px rgba(0,0,0,.55);overflow:hidden}
+  .cc-modal__head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:18px 18px 12px}
+  .cc-modal__title{font-weight:900;font-size:18px;letter-spacing:.2px}
+  .cc-modal__sub{margin-top:4px;color:rgba(255,255,255,.68);font-size:12px}
+  .cc-modal__close{width:38px;height:38px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:#fff;cursor:pointer;display:grid;place-items:center}
+  .cc-modal__close:hover{background:rgba(255,255,255,.10)}
+  .cc-modal__body{padding:0 18px 14px}
+  .cc-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
+  .cc-field{display:flex;flex-direction:column;gap:8px}
+  .cc-label{font-size:12px;color:rgba(255,255,255,.7)}
+  .cc-input,.cc-textarea,.cc-select{border-radius:14px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:#fff;padding:12px 12px;font:inherit;outline:none}
+  .cc-input:focus,.cc-textarea:focus,.cc-select:focus{border-color:rgba(115,233,255,.35);box-shadow:0 0 0 4px rgba(83,199,255,.12)}
+  .cc-textarea{min-height:98px;resize:vertical}
+  .cc-help{font-size:12px;color:rgba(255,255,255,.55)}
+  .cc-req{color:rgba(255,150,140,.95);font-weight:700;margin-left:6px}
+  .cc-error{font-size:12px;color:rgba(255,140,120,.95)}
+  .cc-seg{display:flex;gap:8px;flex-wrap:wrap}
+  .cc-chip{border-radius:999px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:#fff;padding:10px 12px;cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:8px}
+  .cc-chip input{display:none}
+  .cc-chip[data-active="1"]{border-color:rgba(115,233,255,.35);background:rgba(83,199,255,.10)}
+  .cc-modal__foot{display:flex;justify-content:flex-end;gap:10px;padding:12px 18px 18px;border-top:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.02)}
+  @media (max-width:720px){.cc-grid{grid-template-columns:1fr}}
+  `;
+  document.head.appendChild(s);
+}
+
+function openNewTaskModal(poleKey){
+  ensureModalStyles();
+  const p = poleMeta(poleKey);
+
+  // default choices
+  const statuses = (APP.cfg.statuses || [
+    { key: 'Backlog', label: 'Backlog' },
+    { key: 'EnCours', label: 'En cours' },
+    { key: 'EnAttente', label: 'En attente' },
+    { key: 'Termine', label: 'Terminé' },
+  ]);
+  const priorities = (APP.cfg.priorities || [
+    { key: 'P1', label: 'P1 (Urgent)' },
+    { key: 'P2', label: 'P2 (Normal)' },
+    { key: 'P3', label: 'P3 (Bas)' },
+  ]);
+
+  const defaultStatus = 'Backlog';
+  const defaultPriority = 'P2';
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'cc-modal-backdrop';
+  backdrop.innerHTML = `
+    <div class="cc-modal" role="dialog" aria-modal="true" aria-label="Nouvelle tâche">
+      <div class="cc-modal__head">
+        <div>
+          <div class="cc-modal__title">Nouvelle tâche • ${escapeHtml(p.label || poleKey)}</div>
+          <div class="cc-modal__sub">Seul le <b>Titre</b> est requis. Le reste, c’est du bonus pour mieux piloter.</div>
+        </div>
+        <button class="cc-modal__close" type="button" data-close aria-label="Fermer">✕</button>
+      </div>
+      <form class="cc-modal__body" data-form>
+        <div class="cc-grid">
+          <div class="cc-field" style="grid-column:1 / -1;">
+            <div class="cc-label">Titre<span class="cc-req">*</span></div>
+            <input class="cc-input" name="title" placeholder="Ex: Finaliser la roadmap Q1" autocomplete="off" />
+            <div class="cc-error" data-err style="display:none"></div>
+          </div>
+
+          <div class="cc-field">
+            <div class="cc-label">Statut</div>
+            <div class="cc-seg" data-seg="status">
+              ${statuses.map(s => `
+                <label class="cc-chip" data-value="${escapeHtml(s.key)}" data-active="${s.key===defaultStatus?'1':'0'}">
+                  <input type="radio" name="status" value="${escapeHtml(s.key)}" ${s.key===defaultStatus?'checked':''} />
+                  <span>${escapeHtml(s.label)}</span>
+                </label>
+              `).join('')}
+            </div>
+          </div>
+
+          <div class="cc-field">
+            <div class="cc-label">Priorité</div>
+            <div class="cc-seg" data-seg="priority">
+              ${priorities.map(pr => `
+                <label class="cc-chip" data-value="${escapeHtml(pr.key)}" data-active="${pr.key===defaultPriority?'1':'0'}">
+                  <input type="radio" name="priority" value="${escapeHtml(pr.key)}" ${pr.key===defaultPriority?'checked':''} />
+                  <span>${escapeHtml(pr.label || pr.key)}</span>
+                </label>
+              `).join('')}
+            </div>
+          </div>
+
+          <div class="cc-field">
+            <div class="cc-label">Échéance</div>
+            <input class="cc-input" type="date" name="due" ${APP.fieldInternal?.DueDate ? '' : 'disabled'} />
+            ${APP.fieldInternal?.DueDate
+              ? `<div class="cc-help">Optionnel — mais très utile pour sortir des surprises du calendrier.</div>`
+              : `<div class="cc-help">Colonne Échéance non détectée dans la liste : ce champ est désactivé.</div>`
+            }
+          </div>
+
+          <div class="cc-field" style="grid-column:1 / -1;">
+            <div class="cc-label">Notes</div>
+            <textarea class="cc-textarea" name="notes" placeholder="Contexte, liens, décisions, next steps…"></textarea>
+          </div>
+        </div>
+      </form>
+      <div class="cc-modal__foot">
+        <button class="pill" type="button" data-cancel>Annuler</button>
+        <button class="pill pill--primary" type="button" data-submit>Créer</button>
+      </div>
+    </div>
+  `;
+
+  function close(){
+    backdrop.remove();
+  }
+
+  return new Promise((resolve) => {
+    document.body.appendChild(backdrop);
+    const modal = backdrop.querySelector('.cc-modal');
+    const form = backdrop.querySelector('[data-form]');
+    const titleEl = backdrop.querySelector('input[name="title"]');
+    const errEl = backdrop.querySelector('[data-err]');
+
+    const setActive = (segName, value) => {
+      backdrop.querySelectorAll(`[data-seg="${segName}"] .cc-chip`).forEach(ch => {
+        ch.dataset.active = (ch.dataset.value === value) ? '1' : '0';
+      });
+    };
+    backdrop.querySelectorAll('[data-seg] .cc-chip').forEach(ch => {
+      ch.addEventListener('click', () => {
+        const group = ch.closest('[data-seg]')?.dataset?.seg;
+        const val = ch.dataset.value;
+        const input = ch.querySelector('input');
+        if (input) input.checked = true;
+        if (group) setActive(group, val);
+      });
+    });
+
+    const submit = async () => {
+      const title = String(titleEl.value || '').trim();
+      if (!title) {
+        errEl.textContent = 'Le titre est obligatoire.';
+        errEl.style.display = '';
+        titleEl.focus();
+        return;
+      }
+      errEl.style.display = 'none';
+
+      const status = (backdrop.querySelector('input[name="status"]:checked')?.value) || defaultStatus;
+      const priority = (backdrop.querySelector('input[name="priority"]:checked')?.value) || defaultPriority;
+      const due = (backdrop.querySelector('input[name="due"]')?.value) || '';
+      const notes = String(backdrop.querySelector('textarea[name="notes"]')?.value || '').trim();
+
+      // Store due date as ISO-ish for Graph; keep it simple for SharePoint date columns
+      const dueDate = due ? `${due}T00:00:00Z` : '';
+
+      close();
+      resolve({
+        title,
+        pole: poleKey,
+        status,
+        priority,
+        dueDate,
+        notes,
+        linkUrl: '',
+        sortOrder: Date.now(),
+      });
+    };
+
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) { close(); resolve(null); }
+    });
+    backdrop.querySelector('[data-close]')?.addEventListener('click', () => { close(); resolve(null); });
+    backdrop.querySelector('[data-cancel]')?.addEventListener('click', () => { close(); resolve(null); });
+    backdrop.querySelector('[data-submit]')?.addEventListener('click', submit);
+    form.addEventListener('submit', (e) => { e.preventDefault(); submit(); });
+    window.addEventListener('keydown', function onKey(ev){
+      if (ev.key === 'Escape') {
+        window.removeEventListener('keydown', onKey);
+        close();
+        resolve(null);
+      }
+    });
+    // focus title for speed
+    setTimeout(() => titleEl?.focus(), 0);
+  });
+}
+
 async function initAuth(){
   if (!window.msal || !window.msal.PublicClientApplication) {
     throw new Error('MSAL non chargé. Vérifie ta connexion et le script CDN.');
@@ -290,6 +484,13 @@ async function loadListColumns(){
     ];
     APP.fieldInternal.DueDate = resolveInternalName(dueCandidates);
 
+    // Core fields (often created by our setup script). We still resolve them to be tenant-proof.
+    APP.fieldInternal.Pole = resolveInternalName(['Pole','Pôle','Pôle (clé)','PoleKey','Module','Domaine']);
+    APP.fieldInternal.Status = resolveInternalName(['Status','Statut','État','Etat','State']);
+    APP.fieldInternal.Priority = resolveInternalName(['Priority','Priorité','Priorite','Urgence','Importance']);
+    APP.fieldInternal.Notes = resolveInternalName(['Notes','Note','Commentaires','Commentaire','Description','Détails','Details']);
+    APP.fieldInternal.SortOrder = resolveInternalName(['SortOrder','Order','Ordre','Position','Tri']);
+
     // Resolve internal name for Link URL / Hyperlink column if present.
     // NOTE: many SharePoint Lists do NOT have such a column by default.
     // We keep it optional and only write it when it exists.
@@ -309,6 +510,11 @@ async function loadListColumns(){
     APP.columnsNorm = {};
     APP.fieldInternal.DueDate = null;
     APP.fieldInternal.LinkUrl = null;
+    APP.fieldInternal.Pole = null;
+    APP.fieldInternal.Status = null;
+    APP.fieldInternal.Priority = null;
+    APP.fieldInternal.Notes = null;
+    APP.fieldInternal.SortOrder = null;
     console.warn('loadListColumns failed:', e);
   }
 }
@@ -478,8 +684,10 @@ function mapFromListItem(item){
 function mapToFields(task){
   const fields = {};
   fields[FIELD.Title] = task.title;
-  fields[FIELD.Pole] = task.pole;
-  fields[FIELD.Status] = task.status;
+
+  // Prefer resolved internal names for core fields (tenant-proof), fallback to our default keys.
+  fields[APP.fieldInternal?.Pole || FIELD.Pole] = task.pole;
+  fields[APP.fieldInternal?.Status || FIELD.Status] = task.status;
   // Due date is optional. Only write if the list has a compatible column.
   if (task.dueDate) {
     const dueInternal = APP.fieldInternal?.DueDate;
@@ -490,8 +698,25 @@ function mapToFields(task){
       // (No throw; we simply ignore the due date.)
     }
   }
-  fields[FIELD.Priority] = task.priority;
-  fields[FIELD.Notes] = task.notes || '';
+  // Priority is optional: only write it if the list has a compatible column.
+  if (task.priority) {
+    const priInternal = APP.fieldInternal?.Priority;
+    if (priInternal) {
+      fields[priInternal] = task.priority;
+    } else {
+      // silent drop; list doesn't support priority
+    }
+  }
+
+  // Notes are optional: only write them if the list has a compatible column.
+  if (task.notes) {
+    const notesInternal = APP.fieldInternal?.Notes;
+    if (notesInternal) {
+      fields[notesInternal] = task.notes;
+    } else {
+      // silent drop; list doesn't support notes
+    }
+  }
   // Link URL is optional. We ONLY write it when a value is provided AND the list supports a hyperlink column.
   // Many lists do not have this column; sending an unknown key breaks creation.
   const linkInternal = APP.fieldInternal?.LinkUrl;
@@ -500,7 +725,8 @@ function mapToFields(task){
       fields[linkInternal] = { Url: task.linkUrl, Description: '' };
     }
   }
-  fields[FIELD.SortOrder] = Number(task.sortOrder ?? 0);
+  const sortInternal = APP.fieldInternal?.SortOrder || FIELD.SortOrder;
+  fields[sortInternal] = Number(task.sortOrder ?? 0);
   return fields;
 }
 
@@ -519,6 +745,23 @@ async function loadTasks(){
 async function updateTaskFields(itemId, partialFields){
   await loadListColumns();
   const { siteId, listId } = APP.cfg;
+
+  // Tenant-proof remapping for core fields (when table view edits use default keys)
+  const remapSimple = (logicalKey, internalKey, labelForToast) => {
+    if (!partialFields || !Object.prototype.hasOwnProperty.call(partialFields, logicalKey)) return;
+    const val = partialFields[logicalKey];
+    delete partialFields[logicalKey];
+    if (internalKey) {
+      partialFields[internalKey] = val;
+    } else if (val != null && val !== '') {
+      toast(`Colonne ${labelForToast} absente : valeur ignorée.`, 'warn');
+    }
+  };
+  remapSimple(FIELD.Pole, APP.fieldInternal?.Pole, 'Pôle');
+  remapSimple(FIELD.Status, APP.fieldInternal?.Status, 'Statut');
+  remapSimple(FIELD.Priority, APP.fieldInternal?.Priority, 'Priorité');
+  remapSimple(FIELD.Notes, APP.fieldInternal?.Notes, 'Notes');
+  remapSimple(FIELD.SortOrder, APP.fieldInternal?.SortOrder, 'Ordre');
 
   // Bulletproof: remap DueDate to the actual internal field name if present; otherwise drop it.
   if (partialFields && Object.prototype.hasOwnProperty.call(partialFields, FIELD.DueDate)) {
@@ -554,6 +797,12 @@ async function createTask(task){
   await loadListColumns();
   if (task?.dueDate && !APP.fieldInternal?.DueDate) {
     toast('Colonne Échéance absente : date ignorée (tâche créée quand même).', 'warn');
+  }
+  if (task?.notes && !APP.fieldInternal?.Notes) {
+    toast('Colonne Notes absente : notes ignorées (tâche créée quand même).', 'warn');
+  }
+  if (task?.priority && !APP.fieldInternal?.Priority) {
+    toast('Colonne Priorité absente : priorité ignorée (tâche créée quand même).', 'warn');
   }
   if (task?.linkUrl && !APP.fieldInternal?.LinkUrl) {
     toast('Champ Lien/URL absent : valeur ignorée (tâche créée quand même).', 'warn');
@@ -850,14 +1099,14 @@ function viewPole(poleKey){
     $$('.tab[data-tab]').forEach(btn => btn.addEventListener('click', () => setMode(btn.dataset.tab)));
     const add = $('#btnAddTask');
     if (add) add.addEventListener('click', async () => {
-      const title = prompt('Titre de la tâche');
-      if (!title) return;
-      const task = { title, pole: poleKey, status: 'Backlog', dueDate: null, priority: 'P2', notes: '', linkUrl: '', sortOrder: Date.now() };
       try {
-        await createTask(task);
         if (!APP.account) { await login(); }
-          await loadTasks();
-          toast('Tâche créée ✅', 'good');
+        await loadListColumns();
+        const task = await openNewTaskModal(poleKey);
+        if (!task) return;
+        await createTask(task);
+        await loadTasks();
+        toast('Tâche créée ✅', 'good');
         render();
       } catch (e) {
         console.error(e);
