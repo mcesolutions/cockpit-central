@@ -66,3 +66,26 @@ Tu peux héberger ce dossier tel quel (statique) sur:
 
 ## Notes "Ouvrir dans l'Explorateur"
 Les navigateurs ne peuvent pas forcer l'ouverture dans l'explorateur Windows. La méthode robuste est de synchroniser le dossier avec OneDrive, puis l'accès se fait via l'explorateur.
+
+## (Optionnel) "Drop ZIP + Deploy" en 1 clic (0$)
+
+**Pourquoi il faut un agent local?**
+Un navigateur ne peut pas écraser des fichiers sur ton disque ni exécuter Git automatiquement. Donc on ajoute un **agent PowerShell local** (gratuit) qui est déclenché via un **custom URL protocol**.
+
+### Flux
+1) Tu déposes un ZIP dans la DropZone (ex: `C:\Dev\DeployDrop\cockpit-central\incoming`).
+2) Dans Cockpit Central, module **Mise à jour ZIP**, tu cliques **Deploy**.
+3) Windows lance l'agent local qui:
+   - sauvegarde (backup)
+   - applique le ZIP (anti zip-slip + denylist)
+   - `git add/commit/push`
+4) Un push GitHub déclenche automatiquement un redeploy Vercel.
+
+### Config
+Dans `config.js`, ajoute/ajuste:
+```js
+deploy: {
+  dropZonePath: "C:\\Dev\\DeployDrop\\cockpit-central\\incoming",
+  protocolUrl: "evolumis://deploy?app=cockpit-central"
+}
+```

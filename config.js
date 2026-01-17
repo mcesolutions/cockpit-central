@@ -44,8 +44,14 @@ window.COCKPIT_CONFIG = {
   ],
 
   priorities: [
-    { key: "P1", label: "Urgent" },
-    { key: "P2", label: "Normal" },
-    { key: "P3", label: "Un jour" },
+    { key: "Urgent", label: "Urgent" },
+    { key: "Normal", label: "Normal" },
+    { key: "Un jour", label: "Un jour" },
   ],
+
+  deploy: [
+    dropZonePath: "C:\\Dev\\DeployDrop\\cockpit-central\\incoming",
+    protocolUrl: "evolumis://deploy?app=cockpit-central"
+],
+
 };

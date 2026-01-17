@@ -16,6 +16,12 @@ window.COCKPIT_CONFIG = {
   siteId: "YOUR_SITE_ID",   // e.g. contoso.sharepoint.com,xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx,yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
   listId: "YOUR_LIST_ID",
 
+  // Evolumis Core (Fastify) - used for 0-click deploy ZIP -> GitHub -> Vercel
+  coreApiBaseUrl: "https://your-core-api.vercel.app",
+  deploy: {
+    appKey: "cockpit-central",
+  },
+
   // Quick links
   links: {
     bienChezSoiApp: "https://example.com",

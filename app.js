@@ -42,6 +42,16 @@ const APP = {
   error: null,
   route: { path: '/', params: {} },
   drag: { taskId: null, fromStatus: null },
+  deploy: {
+    password: '',
+    fileName: '',
+    deploymentId: '',
+    status: 'idle', // idle|uploaded|deploying|success|error
+    summary: null,
+    commitUrl: '',
+    logText: '',
+    lastError: ''
+  },
 };
 
 // Microsoft Graph scopes required for Lists (delegated)
@@ -106,6 +116,7 @@ function parseRoute(){
   if (seg.length === 0) return { path: '/', params: {} };
   if (seg[0] === 'pole' && seg[1]) return { path: '/pole', params: { pole: seg[1] } };
   if (seg[0] === 'settings') return { path: '/settings', params: {} };
+  if (seg[0] === 'deploy') return { path: '/deploy', params: {} };
   return { path: '/', params: {} };
 }
 
@@ -160,26 +171,8 @@ function ensureModalStyles(){
   document.head.appendChild(s);
 }
 
-function ensureEnhancementStyles(){
-  if (document.getElementById('cc-enhance-styles')) return;
-  const s = document.createElement('style');
-  s.id = 'cc-enhance-styles';
-  s.textContent = `
-    /* Make Kanban cards feel actionable */
-    .cardtask{cursor:pointer;}
-    .cardtask:hover{transform:translateY(-1px); box-shadow:0 10px 28px rgba(0,0,0,.28);}
-
-    /* Editable selects in table view */
-    .cell-select{width:100%;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:#fff;padding:8px 10px;font:inherit;outline:none}
-    .cell-select:focus{border-color:rgba(115,233,255,.35);box-shadow:0 0 0 4px rgba(83,199,255,.10)}
-    .cell-select option{color:#111}
-  `;
-  document.head.appendChild(s);
-}
-
 function openNewTaskModal(poleKey){
   ensureModalStyles();
-  ensureEnhancementStyles();
   const p = poleMeta(poleKey);
 
   // default choices
@@ -279,67 +272,10 @@ function openNewTaskModal(poleKey){
     const duePickerEl = backdrop.querySelector('input[name="duePicker"]');
     const dueBtnEl = backdrop.querySelector('[data-datebtn]');
 
-    // User-friendly date entry:
-    // - accept digits only
-    // - progressively restrict month/day ranges
-    // - auto-format to YYYY-MM-DD
+    // User-friendly date entry: allow digits only and auto-format to YYYY-MM-DD.
     // Example: 20250612 -> 2025-06-12
-    const maxDaysInMonth = (y, m) => {
-      if (!y || !m) return 31;
-      const yy = Number(y);
-      const mm = Number(m);
-      if (!yy || !mm || mm < 1 || mm > 12) return 31;
-      return new Date(yy, mm, 0).getDate();
-    };
-
-    const sanitizeDateDigits = (digitsRaw) => {
-      const raw = String(digitsRaw || '').replace(/\D/g,'').slice(0,8);
-      let out = '';
-      for (const ch of raw) {
-        const cand = out + ch;
-        const len = cand.length;
-        // Year: accept 4 digits freely
-        if (len <= 4) { out = cand; continue; }
-
-        // Month tens: only 0 or 1
-        if (len === 5) {
-          if (ch === '0' || ch === '1') out = cand;
-          continue;
-        }
-
-        // Month ones: ensure 01..12
-        if (len === 6) {
-          const mm = Number(cand.slice(4,6));
-          if (mm >= 1 && mm <= 12) out = cand;
-          continue;
-        }
-
-        // Day tens: depends on month/year max days; never allow > 3
-        if (len === 7) {
-          const yy = cand.slice(0,4);
-          const mm = cand.slice(4,6);
-          const maxD = maxDaysInMonth(yy, mm);
-          const maxTens = Math.floor(maxD / 10); // e.g., 31 -> 3, 29 -> 2
-          const tens = Number(ch);
-          if (tens >= 0 && tens <= Math.min(3, maxTens)) out = cand;
-          continue;
-        }
-
-        // Day ones: ensure 01..maxD
-        if (len === 8) {
-          const yy = cand.slice(0,4);
-          const mm = cand.slice(4,6);
-          const dd = Number(cand.slice(6,8));
-          const maxD = maxDaysInMonth(yy, mm);
-          if (dd >= 1 && dd <= maxD) out = cand;
-          continue;
-        }
-      }
-      return out;
-    };
-
     const digitsToISO = (digits) => {
-      const d = sanitizeDateDigits(digits);
+      const d = String(digits || '').replace(/\D/g,'').slice(0,8);
       if (d.length <= 4) return d;
       if (d.length <= 6) return `${d.slice(0,4)}-${d.slice(4)}`;
       return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6)}`;
@@ -348,7 +284,7 @@ function openNewTaskModal(poleKey){
     const normalizeDueText = () => {
       if (!dueTextEl) return;
       const before = String(dueTextEl.value || '');
-      const digits = sanitizeDateDigits(before);
+      const digits = before.replace(/\D/g,'').slice(0,8);
       const formatted = digitsToISO(digits);
       if (before !== formatted) {
         dueTextEl.value = formatted;
@@ -490,281 +426,6 @@ function openNewTaskModal(poleKey){
     });
     // focus title for speed
     setTimeout(() => titleEl?.focus(), 0);
-  });
-}
-
-function openEditTaskModal(task){
-  ensureModalStyles();
-  ensureEnhancementStyles();
-  const poleKey = task?.pole || '';
-  const p = poleMeta(poleKey);
-
-  const statuses = (APP.cfg.statuses || [
-    { key: 'Backlog', label: 'Backlog' },
-    { key: 'EnCours', label: 'En cours' },
-    { key: 'EnAttente', label: 'En attente' },
-    { key: 'Termine', label: 'Terminé' },
-  ]);
-  const priorities = (APP.cfg.priorities || [
-    { key: 'P1', label: 'P1 (Urgent)' },
-    { key: 'P2', label: 'P2 (Normal)' },
-    { key: 'P3', label: 'P3 (Bas)' },
-  ]);
-
-  const defaultStatus = task?.status || 'Backlog';
-  const defaultPriority = task?.priority || 'P2';
-
-  const backdrop = document.createElement('div');
-  backdrop.className = 'cc-modal-backdrop';
-  backdrop.innerHTML = `
-    <div class="cc-modal" role="dialog" aria-modal="true" aria-label="Modifier tâche">
-      <div class="cc-modal__head">
-        <div>
-          <div class="cc-modal__title">Modifier la tâche • ${escapeHtml(p.label || poleKey)}</div>
-          <div class="cc-modal__sub">Le <b>Titre</b> reste requis. Le reste est optionnel.</div>
-        </div>
-        <button class="cc-modal__close" type="button" data-close aria-label="Fermer">✕</button>
-      </div>
-      <form class="cc-modal__body" data-form>
-        <div class="cc-grid">
-          <div class="cc-field" style="grid-column:1 / -1;">
-            <div class="cc-label">Titre<span class="cc-req">*</span></div>
-            <input class="cc-input" name="title" placeholder="Titre" autocomplete="off" />
-            <div class="cc-error" data-err style="display:none"></div>
-          </div>
-
-          <div class="cc-field">
-            <div class="cc-label">Statut</div>
-            <div class="cc-seg" data-seg="status">
-              ${statuses.map(s => `
-                <label class="cc-chip" data-value="${escapeHtml(s.key)}" data-active="${s.key===defaultStatus?'1':'0'}">
-                  <input type="radio" name="status" value="${escapeHtml(s.key)}" ${s.key===defaultStatus?'checked':''} />
-                  <span>${escapeHtml(s.label)}</span>
-                </label>
-              `).join('')}
-            </div>
-          </div>
-
-          <div class="cc-field">
-            <div class="cc-label">Priorité</div>
-            <div class="cc-seg" data-seg="priority">
-              ${priorities.map(pr => `
-                <label class="cc-chip" data-value="${escapeHtml(pr.key)}" data-active="${pr.key===defaultPriority?'1':'0'}">
-                  <input type="radio" name="priority" value="${escapeHtml(pr.key)}" ${pr.key===defaultPriority?'checked':''} />
-                  <span>${escapeHtml(pr.label || pr.key)}</span>
-                </label>
-              `).join('')}
-            </div>
-          </div>
-
-          <div class="cc-field">
-            <div class="cc-label">Échéance</div>
-            <div class="cc-datewrap">
-              <button class="cc-datebtn" type="button" data-datebtn title="Choisir une date">${icon('calendar')}</button>
-              <input class="cc-input" type="text" name="due" inputmode="numeric" placeholder="aaaa-MM-jj" autocomplete="off" />
-              <input class="cc-datepick" type="date" name="duePicker" />
-            </div>
-            <div class="cc-help">Optionnel — 8 chiffres (ex: 20250612) ou calendrier.</div>
-          </div>
-
-          <div class="cc-field" style="grid-column:1 / -1;">
-            <div class="cc-label">Notes</div>
-            <textarea class="cc-textarea" name="notes" placeholder="Notes…"></textarea>
-          </div>
-        </div>
-      </form>
-      <div class="cc-modal__foot">
-        <button class="pill" type="button" data-cancel>Annuler</button>
-        <button class="pill pill--primary" type="button" data-submit>Enregistrer</button>
-      </div>
-    </div>
-  `;
-
-  function close(){ backdrop.remove(); }
-
-  return new Promise((resolve) => {
-    document.body.appendChild(backdrop);
-
-    const form = backdrop.querySelector('[data-form]');
-    const titleEl = backdrop.querySelector('input[name="title"]');
-    const errEl = backdrop.querySelector('[data-err]');
-    const dueTextEl = backdrop.querySelector('input[name="due"]');
-    const duePickerEl = backdrop.querySelector('input[name="duePicker"]');
-    const dueBtnEl = backdrop.querySelector('[data-datebtn]');
-
-    // Prefill
-    if (titleEl) titleEl.value = String(task?.title || '');
-    const initialDue = task?.dueDate ? fmtDate(task.dueDate) : '';
-    if (dueTextEl) dueTextEl.value = initialDue;
-    if (duePickerEl) duePickerEl.value = initialDue;
-    const notesEl = backdrop.querySelector('textarea[name="notes"]');
-    if (notesEl) notesEl.value = String(task?.notes || '');
-
-    // Reuse the same input behavior as the create modal
-    const maxDaysInMonth = (y, m) => {
-      if (!y || !m) return 31;
-      const yy = Number(y);
-      const mm = Number(m);
-      if (!yy || !mm || mm < 1 || mm > 12) return 31;
-      return new Date(yy, mm, 0).getDate();
-    };
-    const sanitizeDateDigits = (digitsRaw) => {
-      const raw = String(digitsRaw || '').replace(/\D/g,'').slice(0,8);
-      let out = '';
-      for (const ch of raw) {
-        const cand = out + ch;
-        const len = cand.length;
-        if (len <= 4) { out = cand; continue; }
-        if (len === 5) { if (ch === '0' || ch === '1') out = cand; continue; }
-        if (len === 6) {
-          const mm = Number(cand.slice(4,6));
-          if (mm >= 1 && mm <= 12) out = cand;
-          continue;
-        }
-        if (len === 7) {
-          const yy = cand.slice(0,4);
-          const mm = cand.slice(4,6);
-          const maxD = maxDaysInMonth(yy, mm);
-          const maxTens = Math.floor(maxD / 10);
-          const tens = Number(ch);
-          if (tens >= 0 && tens <= Math.min(3, maxTens)) out = cand;
-          continue;
-        }
-        if (len === 8) {
-          const yy = cand.slice(0,4);
-          const mm = cand.slice(4,6);
-          const dd = Number(cand.slice(6,8));
-          const maxD = maxDaysInMonth(yy, mm);
-          if (dd >= 1 && dd <= maxD) out = cand;
-          continue;
-        }
-      }
-      return out;
-    };
-    const digitsToISO = (digits) => {
-      const d = sanitizeDateDigits(digits);
-      if (d.length <= 4) return d;
-      if (d.length <= 6) return `${d.slice(0,4)}-${d.slice(4)}`;
-      return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6)}`;
-    };
-    const normalizeDueText = () => {
-      if (!dueTextEl) return '';
-      const before = String(dueTextEl.value || '');
-      const digits = sanitizeDateDigits(before);
-      const formatted = digitsToISO(digits);
-      if (before !== formatted) dueTextEl.value = formatted;
-      return formatted;
-    };
-    const isValidISODate = (s) => {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
-      const d = new Date(s + 'T00:00:00Z');
-      if (isNaN(d.getTime())) return false;
-      const y = d.getUTCFullYear();
-      const m = String(d.getUTCMonth()+1).padStart(2,'0');
-      const da = String(d.getUTCDate()).padStart(2,'0');
-      return `${y}-${m}-${da}` === s;
-    };
-    const syncDueTextToPicker = () => {
-      if (!dueTextEl || !duePickerEl) return;
-      const v = String(dueTextEl.value || '').trim();
-      if (!v) { duePickerEl.value = ''; return; }
-      if (isValidISODate(v)) duePickerEl.value = v;
-    };
-    const syncDuePickerToText = () => {
-      if (!dueTextEl || !duePickerEl) return;
-      if (duePickerEl.value) dueTextEl.value = duePickerEl.value;
-    };
-    if (dueBtnEl && duePickerEl) {
-      dueBtnEl.addEventListener('click', () => {
-        try {
-          if (typeof duePickerEl.showPicker === 'function') duePickerEl.showPicker();
-          else { duePickerEl.focus(); duePickerEl.click(); }
-        } catch { try { duePickerEl.focus(); duePickerEl.click(); } catch {} }
-      });
-    }
-    duePickerEl?.addEventListener('change', () => syncDuePickerToText());
-    dueTextEl?.addEventListener('input', () => {
-      const v = normalizeDueText();
-      if (v && isValidISODate(v)) syncDueTextToPicker();
-      if (!v && duePickerEl) duePickerEl.value = '';
-    });
-    dueTextEl?.addEventListener('blur', () => {
-      const v = String(normalizeDueText() || '').trim();
-      if (!v) { if (duePickerEl) duePickerEl.value = ''; return; }
-      if (v.length !== 10 || !isValidISODate(v)) {
-        toast('Échéance : saisis 8 chiffres (ex: 20250612) ou utilise le calendrier.', 'warn');
-        dueTextEl.focus();
-        dueTextEl.select?.();
-        return;
-      }
-      syncDueTextToPicker();
-    });
-
-    const setActive = (segName, value) => {
-      backdrop.querySelectorAll(`[data-seg="${segName}"] .cc-chip`).forEach(ch => {
-        ch.dataset.active = (ch.dataset.value === value) ? '1' : '0';
-      });
-    };
-    backdrop.querySelectorAll('[data-seg] .cc-chip').forEach(ch => {
-      ch.addEventListener('click', () => {
-        const group = ch.closest('[data-seg]')?.dataset?.seg;
-        const val = ch.dataset.value;
-        const input = ch.querySelector('input');
-        if (input) input.checked = true;
-        if (group) setActive(group, val);
-      });
-    });
-
-    const submit = async () => {
-      const title = String(titleEl?.value || '').trim();
-      if (!title) {
-        errEl.textContent = 'Le titre est obligatoire.';
-        errEl.style.display = '';
-        titleEl?.focus?.();
-        return;
-      }
-      errEl.style.display = 'none';
-
-      const status = (backdrop.querySelector('input[name="status"]:checked')?.value) || defaultStatus;
-      const priority = (backdrop.querySelector('input[name="priority"]:checked')?.value) || defaultPriority;
-      const due = String((normalizeDueText?.() ?? dueTextEl?.value ?? duePickerEl?.value ?? '') || '').trim();
-      const notes = String(backdrop.querySelector('textarea[name="notes"]')?.value || '').trim();
-
-      if (due && !isValidISODate(due)) {
-        toast('Échéance : saisis 8 chiffres (ex: 20250612) ou utilise le calendrier.', 'warn');
-        dueTextEl?.focus?.();
-        dueTextEl?.select?.();
-        return;
-      }
-
-      const dueDate = due ? `${due}T00:00:00Z` : null;
-
-      close();
-      resolve({
-        id: task.id,
-        title,
-        status,
-        priority,
-        dueDate,
-        notes,
-      });
-    };
-
-    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) { close(); resolve(null); } });
-    backdrop.querySelector('[data-close]')?.addEventListener('click', () => { close(); resolve(null); });
-    backdrop.querySelector('[data-cancel]')?.addEventListener('click', () => { close(); resolve(null); });
-    backdrop.querySelector('[data-submit]')?.addEventListener('click', submit);
-    form?.addEventListener('submit', (e) => { e.preventDefault(); submit(); });
-
-    window.addEventListener('keydown', function onKey(ev){
-      if (ev.key === 'Escape') {
-        window.removeEventListener('keydown', onKey);
-        close();
-        resolve(null);
-      }
-    });
-
-    setTimeout(() => titleEl?.focus?.(), 0);
   });
 }
 
@@ -1113,30 +774,14 @@ function normalizePriority(raw){
 
 function mapFromListItem(item){
   const f = item.fields || {};
-
-  // Use resolved internal names when available (tenant-proof). This is critical for fields whose
-  // internal name differs from the display name (e.g., "Échéance" -> "Echeance0").
-  const poleKey = APP.fieldInternal?.Pole;
-  const statusKey = APP.fieldInternal?.Status;
-  const dueKey = APP.fieldInternal?.DueDate;
-  const priKey = APP.fieldInternal?.Priority;
-  const notesKey = APP.fieldInternal?.Notes;
-  const orderKey = APP.fieldInternal?.SortOrder;
-  const linkKey = APP.fieldInternal?.LinkUrl;
-
   const title = pickField(f, [FIELD.Title, 'Title', 'Titre']);
-  const pole = pickField(f, [poleKey, FIELD.Pole, 'Pole', 'Pôle', 'PoleKey', 'PoleId', 'Module', 'Domaine'].filter(Boolean));
-  const status = pickField(f, [statusKey, FIELD.Status, 'Status', 'Statut', 'État', 'Etat', 'State'].filter(Boolean));
-  const dueDate = pickField(f, [dueKey, FIELD.DueDate, 'DueDate', 'Echeance', 'Échéance', 'Echéance', "Date d'échéance", 'Due date', 'Deadline', 'Due'].filter(Boolean));
-  const priority = pickField(f, [priKey, FIELD.Priority, 'Priority', 'Priorite', 'Priorité', 'Urgence', 'Importance'].filter(Boolean));
-  const notes = pickField(f, [notesKey, FIELD.Notes, 'Notes', 'Note', 'Commentaires', 'Commentaire', 'Description', 'Détails', 'Details'].filter(Boolean));
-  const sortOrder = pickField(f, [orderKey, FIELD.SortOrder, 'SortOrder', 'Order', 'Ordre', 'Position', 'Tri'].filter(Boolean));
-  const link = pickField(f, [linkKey, FIELD.LinkUrl, 'LinkUrl', 'Lien', 'URL', 'Url', 'Hyperlink', 'Lien URL', 'Link URL'].filter(Boolean));
-
-  // Creation timestamp (for future reminders/analytics).
-  // Graph provides createdDateTime on the listItem; SharePoint also exposes a 'Created' field.
-  const createdAt = item.createdDateTime || pickField(f, ['Created', 'CreatedDate', 'Date de création', 'Date creation', 'CreationDate', 'DateCreation']);
-
+  const pole = pickField(f, [FIELD.Pole, 'Pole', 'Pôle', 'PoleKey', 'PoleId']);
+  const status = pickField(f, [FIELD.Status, 'Status', 'Statut']);
+  const dueDate = pickField(f, [FIELD.DueDate, 'DueDate', 'Echeance', 'Échéance', 'Echéance', 'Due', 'Date']);
+  const priority = pickField(f, [FIELD.Priority, 'Priority', 'Priorite', 'Priorité']);
+  const notes = pickField(f, [FIELD.Notes, 'Notes', 'Note', 'Commentaires', 'Commentaire']);
+  const sortOrder = pickField(f, [FIELD.SortOrder, 'SortOrder', 'Order', 'Ordre']);
+  const link = pickField(f, [FIELD.LinkUrl, 'LinkUrl', 'Lien', 'URL', 'Url']);
   return {
     id: item.id,
     title: title || '',
@@ -1147,7 +792,6 @@ function mapFromListItem(item){
     notes: notes || '',
     linkUrl: (link && (link.Url || link.url || link)) || '',
     sortOrder: Number(sortOrder ?? 0),
-    createdAt: createdAt || '',
     raw: item,
   };
 }
@@ -1280,7 +924,7 @@ async function createTask(task){
   }
 
   const { siteId, listId } = APP.cfg;
-  const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/items?$expand=fields`;
+  const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/items`;
   const body = { fields: mapToFields(task) };
   // Extra bulletproof: if no link is provided, make sure NO link-like field is sent
   // (some older builds or tenant-specific fields can otherwise trigger a 400).
@@ -1369,7 +1013,9 @@ function icon(name){
     kanban: `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="6" height="16" rx="2"/><rect x="10" y="4" width="4" height="10" rx="2"/><rect x="15" y="4" width="6" height="13" rx="2"/></svg>`,
     plus: `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
     refresh: `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>`,
+    rocket: `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c2-2 5-3 7.5-3s5.5 1 7.5 3"/><path d="M12 13.5V3c4 1 7 4 7 8 0 1.7-.5 3-1.5 4.5"/><path d="M12 13.5V3c-4 1-7 4-7 8 0 1.7.5 3 1.5 4.5"/><path d="M9 21l3-3 3 3"/></svg>`,
     settings: `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a7.8 7.8 0 0 0 .1-2l2-1.2-2-3.5-2.3.6a7.6 7.6 0 0 0-1.7-1L15 4h-6l-.5 2.9a7.6 7.6 0 0 0-1.7 1L4.5 7.3l-2 3.5L4.5 12a7.8 7.8 0 0 0 .1 2l-2 1.2 2 3.5 2.3-.6a7.6 7.6 0 0 0 1.7 1L9 20h6l.5-2.9a7.6 7.6 0 0 0 1.7-1l2.3.6 2-3.5L19.4 15z"/></svg>`,
+    rocket: `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 6 2-4 4-2 6-4-6-4-4-2-2-4-4 6"/><path d="M14 10l-4 4"/><path d="M9.5 14.5l-2 2"/></svg>`,
     logout: `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
     login: `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>`,
     trash: `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`,
@@ -1408,6 +1054,7 @@ function layout(content){
           </div>
 
           <div class="actions">
+            <a class="pill" href="#/deploy" title="Déployer un ZIP">${icon('rocket')}<span>Deploy</span></a>
             <a class="pill" href="#/settings" title="Réglages">${icon('settings')}<span>Réglage</span></a>
             <button class="pill" id="btnRefresh" title="Rafraîchir">${icon('refresh')}<span>Sync</span></button>
             ${APP.account
@@ -1522,6 +1169,244 @@ function viewSettings(){
   `);
 }
 
+function viewDeploy(){
+  const core = (APP.cfg.coreApiBaseUrl || '').trim();
+  const hasCore = !!core;
+  const pwd = (sessionStorage.getItem('cc_deploy_password') || '').trim();
+  const st = APP.deploy || {};
+  const state = st.status || 'idle';
+
+  const banner = !hasCore
+    ? `<div class="notice notice--bad">coreApiBaseUrl n'est pas configuré. Ajoute-le dans config.js (voir /settings).</div>`
+    : '';
+
+  const summary = st.summary
+    ? `<div class="notice notice--good">ZIP analysé : <b>${st.summary.accepted}</b> fichier(s) prêt(s) à pousser, <b>${st.summary.ignored}</b> ignoré(s).</div>`
+    : '';
+
+  const warnings = st.summary?.warnings?.length
+    ? `<div class="notice notice--warn"><b>Avertissements</b><ul>${st.summary.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul></div>`
+    : '';
+
+  const btnClass = state === 'success' ? 'pill pill--good fx-pop' : (state === 'error' ? 'pill pill--bad' : 'pill pill--primary');
+  const btnLabel = state === 'deploying' ? 'Déploiement…' : (state === 'success' ? 'Déployé ✅' : 'Déployer');
+
+  const commitLink = st.commitUrl ? `<a class="pill" target="_blank" rel="noopener" href="${escapeHtml(st.commitUrl)}">Voir commit</a>` : '';
+  const logBtn = st.logText ? `<button class="pill" id="btnShowDeployLog">Log</button>` : '';
+
+  return layout(`
+    <div class="card">
+      <div class="card__inner">
+        <div class="row">
+          <div>
+            <b style="font-size:16px;">Deploy (ZIP → GitHub → Vercel)</b>
+            <div class="small">Drop un ZIP, puis pousse vers <span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">mcesolutions/cockpit-central</span> (branche <b>main</b>).</div>
+          </div>
+          <a class="pill" href="#/">Retour</a>
+        </div>
+
+        <div class="sep"></div>
+        ${banner}
+
+        <div class="grid2" style="gap:12px; align-items:start;">
+          <div class="cardsub">
+            <div class="small"><b>1) Mot de passe Deploy</b></div>
+            <div class="row" style="gap:10px; margin-top:8px;">
+              <input id="deployPwd" class="input" type="password" placeholder="Mot de passe" value="${escapeHtml(pwd)}" style="flex:1;" />
+              <button class="pill" id="btnSaveDeployPwd">Enregistrer</button>
+            </div>
+            <div class="small" style="margin-top:6px;">Stocké en <span style="font-family:ui-monospace, SFMono-Regular, Menlo, monospace;">sessionStorage</span> (reste local).</div>
+          </div>
+
+          <div class="cardsub">
+            <div class="small"><b>2) ZIP à déployer</b></div>
+            <div id="dropzone" class="dropzone" ${hasCore ? '' : 'aria-disabled="true"'}>
+              <div class="dropzone__title">Dépose ton ZIP ici</div>
+              <div class="dropzone__sub">ou <label class="linklike"><input id="fileZip" type="file" accept=".zip" style="display:none" />parcourir…</label></div>
+              <div class="dropzone__file" id="zipName">${escapeHtml(st.fileName || 'Aucun fichier')}</div>
+            </div>
+            <div class="row" style="justify-content:flex-end; margin-top:10px;">
+              <button class="pill" id="btnResetDeploy">Réinitialiser</button>
+              <button class="${btnClass}" id="btnDeploy" ${(!hasCore || !pwd || !st.deploymentId || state==='deploying') ? 'disabled' : ''}>${btnLabel}</button>
+              ${commitLink}
+              ${logBtn}
+            </div>
+            ${summary}
+            ${warnings}
+            ${st.lastError ? `<div class="notice notice--bad">${escapeHtml(st.lastError)}</div>` : ''}
+          </div>
+        </div>
+
+        <div class="sep"></div>
+        <div class="small">Astuce: après le push, Vercel rebuild automatiquement sur la branche <b>main</b> (si ton projet Vercel est lié au repo).</div>
+      </div>
+    </div>
+
+    <div class="overlay" id="deployLogModal" style="display:none;">
+      <div class="modal">
+        <div class="row">
+          <b>Log</b>
+          <button class="pill" data-close="1">Fermer</button>
+        </div>
+        <div class="sep"></div>
+        <pre class="logbox" id="deployLogBox">${escapeHtml(st.logText || '')}</pre>
+      </div>
+    </div>
+  `);
+}
+
+function coreApiBase(){
+  return (APP.cfg.coreApiBaseUrl || '').trim().replace(/\/$/, '');
+}
+
+function getDeployPassword(){
+  return (sessionStorage.getItem('cc_deploy_password') || '').trim();
+}
+
+async function coreDeployFetch(path, opts={}){
+  const base = coreApiBase();
+  if (!base) throw new Error('coreApiBaseUrl manquant');
+  const pwd = getDeployPassword();
+  if (!pwd) throw new Error('Mot de passe Deploy manquant');
+  const headers = Object.assign({}, opts.headers || {}, { 'x-deploy-password': pwd });
+  const res = await fetch(base + path, { ...opts, headers });
+  const ct = res.headers.get('content-type') || '';
+  const bodyText = await res.text();
+  if (!res.ok) throw new Error(`${res.status} : ${bodyText || res.statusText}`);
+  if (ct.includes('application/json')) {
+    try { return JSON.parse(bodyText); } catch { return bodyText; }
+  }
+  return bodyText;
+}
+
+function resetDeployState(){
+  APP.deploy = { password: '', fileName: '', deploymentId: '', status: 'idle', summary: null, commitUrl: '', logText: '', lastError: '' };
+}
+
+async function uploadDeployZip(file){
+  APP.deploy.lastError = '';
+  APP.deploy.logText = '';
+  APP.deploy.commitUrl = '';
+  APP.deploy.status = 'idle';
+  APP.deploy.fileName = file?.name || '';
+  render();
+
+  const appKey = (APP.cfg.deployAppKey || 'cockpit-central').trim();
+  const form = new FormData();
+  form.append('zip', file);
+  const resp = await coreDeployFetch(`/deployments/${encodeURIComponent(appKey)}/upload`, { method: 'POST', body: form });
+  APP.deploy.deploymentId = resp.deploymentId;
+  APP.deploy.summary = resp;
+  APP.deploy.status = 'uploaded';
+  render();
+}
+
+async function confirmDeploy(){
+  const appKey = (APP.cfg.deployAppKey || 'cockpit-central').trim();
+  const id = APP.deploy.deploymentId;
+  if (!id) return;
+  APP.deploy.status = 'deploying';
+  APP.deploy.lastError = '';
+  APP.deploy.logText = '';
+  render();
+  const now = new Date();
+  const msg = `Deploy: ${APP.deploy.fileName || 'zip'} via Cockpit Central (${now.toISOString()})`;
+  try {
+    const resp = await coreDeployFetch(`/deployments/${encodeURIComponent(appKey)}/confirm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deploymentId: id, commitMessage: msg })
+    });
+    APP.deploy.status = 'success';
+    APP.deploy.commitUrl = resp.commitUrl || '';
+    APP.deploy.logText = `OK\nCommit: ${resp.commitSha || ''}\n${resp.commitUrl || ''}`;
+    toast('Déployé ✅', 'good');
+    render();
+  } catch (e) {
+    console.error(e);
+    APP.deploy.status = 'error';
+    APP.deploy.lastError = String(e?.message || e);
+    // attempt to fetch server log
+    try {
+      const log = await coreDeployFetch(`/deployments/${encodeURIComponent(id)}/log`, { method: 'GET' });
+      APP.deploy.logText = String(log || '');
+    } catch {}
+    toast('Erreur deploy (voir log)', 'bad');
+    render();
+  }
+}
+
+function bindDeployEvents(){
+  const dz = $('#dropzone');
+  const fileInput = $('#fileZip');
+  const btnSavePwd = $('#btnSaveDeployPwd');
+  const btnDeploy = $('#btnDeploy');
+  const btnReset = $('#btnResetDeploy');
+  const btnLog = $('#btnShowDeployLog');
+  const modal = $('#deployLogModal');
+
+  if (btnSavePwd) btnSavePwd.addEventListener('click', () => {
+    const v = ($('#deployPwd')?.value || '').trim();
+    if (!v) { toast('Entre un mot de passe', 'warn'); return; }
+    sessionStorage.setItem('cc_deploy_password', v);
+    toast('Mot de passe enregistré ✅', 'good');
+    render();
+  });
+
+  const handleFile = (file) => {
+    if (!file) return;
+    if (!String(file.name || '').toLowerCase().endsWith('.zip')) { toast('Fichier ZIP requis', 'warn'); return; }
+    uploadDeployZip(file).catch(err => {
+      console.error(err);
+      APP.deploy.lastError = String(err?.message || err);
+      toast('Erreur analyse ZIP', 'bad');
+      render();
+    });
+  };
+
+  if (fileInput) fileInput.addEventListener('change', (e) => {
+    const f = e.target.files?.[0];
+    handleFile(f);
+    e.target.value = '';
+  });
+
+  if (dz) {
+    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dropzone--hover'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('dropzone--hover'));
+    dz.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dz.classList.remove('dropzone--hover');
+      const f = e.dataTransfer.files?.[0];
+      handleFile(f);
+    });
+    dz.addEventListener('click', () => {
+      if (fileInput) fileInput.click();
+    });
+  }
+
+  if (btnReset) btnReset.addEventListener('click', () => {
+    resetDeployState();
+    toast('Réinitialisé', 'good');
+    render();
+  });
+
+  if (btnDeploy) btnDeploy.addEventListener('click', () => {
+    if (btnDeploy.hasAttribute('disabled')) return;
+    confirmDeploy();
+  });
+
+  if (btnLog) btnLog.addEventListener('click', () => {
+    if (modal) modal.style.display = 'flex';
+  });
+
+  if (modal) {
+    modal.querySelectorAll('[data-close="1"]').forEach(el => el.addEventListener('click', () => { modal.style.display = 'none'; }));
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) modal.style.display = 'none';
+    });
+  }
+}
+
 function viewPole(poleKey){
   const p = poleMeta(poleKey);
   const mode = APP.poleView?.[poleKey] || 'kanban';
@@ -1617,40 +1502,9 @@ function viewPoleKanban(tasks){
   // wire DnD after render
   setTimeout(() => {
     $$('.cardtask').forEach(el => {
-      let didDrag = false;
       el.addEventListener('dragstart', (e) => {
-        didDrag = true;
         const id = el.dataset.id;
         e.dataTransfer.setData('text/plain', id);
-      });
-      el.addEventListener('dragend', () => {
-        // let the click event (if any) fire first, then reset
-        setTimeout(() => { didDrag = false; }, 0);
-      });
-      el.addEventListener('click', async () => {
-        if (didDrag) return;
-        const id = el.dataset.id;
-        const t = APP.tasks.find(x => x.id === id);
-        if (!t) return;
-        try {
-          if (!APP.account) { await login(); }
-          await loadListColumns();
-          const edited = await openEditTaskModal(t);
-          if (!edited) return;
-          await updateTaskFields(id, {
-            [FIELD.Title]: edited.title,
-            [FIELD.Status]: edited.status,
-            [FIELD.Priority]: edited.priority,
-            [FIELD.DueDate]: edited.dueDate,
-            [FIELD.Notes]: edited.notes,
-          });
-          await loadTasks();
-          toast('Tâche mise à jour ✅', 'good');
-          render();
-        } catch (err) {
-          console.error(err);
-          toast('Erreur modification (voir console)', 'bad');
-        }
       });
     });
 
@@ -1686,31 +1540,11 @@ function viewPoleKanban(tasks){
 }
 
 function viewPoleTable(tasks){
-  const statuses = (APP.cfg.statuses || [
-    { key: 'Backlog', label: 'Backlog' },
-    { key: 'EnCours', label: 'En cours' },
-    { key: 'EnAttente', label: 'En attente' },
-    { key: 'Termine', label: 'Terminé' },
-  ]);
-  const priorities = (APP.cfg.priorities || [
-    { key: 'P1', label: 'P1 (Urgent)' },
-    { key: 'P2', label: 'P2 (Normal)' },
-    { key: 'P3', label: 'P3 (Bas)' },
-  ]);
-
   const rows = tasks.map(t => `
     <tr>
       <td><div class="cell-edit" contenteditable="true" data-id="${escapeHtml(t.id)}" data-field="${FIELD.Title}">${escapeHtml(t.title)}</div></td>
-      <td>
-        <select class="cell-select" data-id="${escapeHtml(t.id)}" data-field="${FIELD.Status}">
-          ${statuses.map(s => `<option value="${escapeHtml(s.key)}" ${s.key===t.status?'selected':''}>${escapeHtml(s.label || s.key)}</option>`).join('')}
-        </select>
-      </td>
-      <td>
-        <select class="cell-select" data-id="${escapeHtml(t.id)}" data-field="${FIELD.Priority}">
-          ${priorities.map(p => `<option value="${escapeHtml(p.key)}" ${p.key===t.priority?'selected':''}>${escapeHtml(p.label || p.key)}</option>`).join('')}
-        </select>
-      </td>
+      <td>${escapeHtml(t.status)}</td>
+      <td>${escapeHtml(t.priority)}</td>
       <td><div class="cell-edit" contenteditable="true" data-id="${escapeHtml(t.id)}" data-field="${FIELD.DueDate}">${escapeHtml(t.dueDate ? fmtDate(t.dueDate) : '')}</div></td>
       <td><div class="cell-edit" contenteditable="true" data-id="${escapeHtml(t.id)}" data-field="${FIELD.Notes}">${escapeHtml(t.notes || '')}</div></td>
     </tr>
@@ -1718,40 +1552,13 @@ function viewPoleTable(tasks){
 
   // wire inline edits
   setTimeout(() => {
-    $$('.cell-select').forEach(el => {
-      el.addEventListener('change', async () => {
-        const id = el.dataset.id;
-        const field = el.dataset.field;
-        const val = el.value;
-        try {
-          await updateTaskFields(id, { [field]: val });
-          toast('Enregistré ✅', 'good');
-          await loadTasks();
-          render();
-        } catch (e) {
-          console.error(e);
-          toast('Erreur enregistrement', 'bad');
-        }
-      });
-    });
-
     $$('.cell-edit').forEach(el => {
       const save = debounce(async () => {
         const id = el.dataset.id;
         const field = el.dataset.field;
         let val = el.textContent.trim();
         if (field === FIELD.DueDate) {
-          // Accept YYYY-MM-DD or 8 digits, store as ISO datetime (date-only).
-          const digits = String(val || '').replace(/\D/g,'');
-          if (!digits) {
-            val = null;
-          } else {
-            const d = digits.slice(0,8);
-            const iso = d.length === 8
-              ? `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`
-              : String(val || '').trim();
-            val = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso}T00:00:00Z` : null;
-          }
+          val = val ? val : null;
         }
         try {
           await updateTaskFields(id, { [field]: val });
@@ -1836,6 +1643,8 @@ function render(){
 
   if (APP.route.path === '/settings') {
     html = viewSettings();
+  } else if (APP.route.path === '/deploy') {
+    html = viewDeploy();
   } else if (APP.route.path === '/pole') {
     html = viewPole(APP.route.params.pole);
   } else {
@@ -1870,6 +1679,10 @@ function render(){
       toast('Erreur de sync (voir console)', 'bad');
     }
   });
+
+  if (APP.route.path === '/deploy') {
+    bindDeployEvents();
+  }
 }
 
 async function boot(){
