@@ -1113,14 +1113,30 @@ function normalizePriority(raw){
 
 function mapFromListItem(item){
   const f = item.fields || {};
+
+  // Use resolved internal names when available (tenant-proof). This is critical for fields whose
+  // internal name differs from the display name (e.g., "Échéance" -> "Echeance0").
+  const poleKey = APP.fieldInternal?.Pole;
+  const statusKey = APP.fieldInternal?.Status;
+  const dueKey = APP.fieldInternal?.DueDate;
+  const priKey = APP.fieldInternal?.Priority;
+  const notesKey = APP.fieldInternal?.Notes;
+  const orderKey = APP.fieldInternal?.SortOrder;
+  const linkKey = APP.fieldInternal?.LinkUrl;
+
   const title = pickField(f, [FIELD.Title, 'Title', 'Titre']);
-  const pole = pickField(f, [FIELD.Pole, 'Pole', 'Pôle', 'PoleKey', 'PoleId']);
-  const status = pickField(f, [FIELD.Status, 'Status', 'Statut']);
-  const dueDate = pickField(f, [FIELD.DueDate, 'DueDate', 'Echeance', 'Échéance', 'Echéance', 'Due', 'Date']);
-  const priority = pickField(f, [FIELD.Priority, 'Priority', 'Priorite', 'Priorité']);
-  const notes = pickField(f, [FIELD.Notes, 'Notes', 'Note', 'Commentaires', 'Commentaire']);
-  const sortOrder = pickField(f, [FIELD.SortOrder, 'SortOrder', 'Order', 'Ordre']);
-  const link = pickField(f, [FIELD.LinkUrl, 'LinkUrl', 'Lien', 'URL', 'Url']);
+  const pole = pickField(f, [poleKey, FIELD.Pole, 'Pole', 'Pôle', 'PoleKey', 'PoleId', 'Module', 'Domaine'].filter(Boolean));
+  const status = pickField(f, [statusKey, FIELD.Status, 'Status', 'Statut', 'État', 'Etat', 'State'].filter(Boolean));
+  const dueDate = pickField(f, [dueKey, FIELD.DueDate, 'DueDate', 'Echeance', 'Échéance', 'Echéance', "Date d'échéance", 'Due date', 'Deadline', 'Due'].filter(Boolean));
+  const priority = pickField(f, [priKey, FIELD.Priority, 'Priority', 'Priorite', 'Priorité', 'Urgence', 'Importance'].filter(Boolean));
+  const notes = pickField(f, [notesKey, FIELD.Notes, 'Notes', 'Note', 'Commentaires', 'Commentaire', 'Description', 'Détails', 'Details'].filter(Boolean));
+  const sortOrder = pickField(f, [orderKey, FIELD.SortOrder, 'SortOrder', 'Order', 'Ordre', 'Position', 'Tri'].filter(Boolean));
+  const link = pickField(f, [linkKey, FIELD.LinkUrl, 'LinkUrl', 'Lien', 'URL', 'Url', 'Hyperlink', 'Lien URL', 'Link URL'].filter(Boolean));
+
+  // Creation timestamp (for future reminders/analytics).
+  // Graph provides createdDateTime on the listItem; SharePoint also exposes a 'Created' field.
+  const createdAt = item.createdDateTime || pickField(f, ['Created', 'CreatedDate', 'Date de création', 'Date creation', 'CreationDate', 'DateCreation']);
+
   return {
     id: item.id,
     title: title || '',
@@ -1131,6 +1147,7 @@ function mapFromListItem(item){
     notes: notes || '',
     linkUrl: (link && (link.Url || link.url || link)) || '',
     sortOrder: Number(sortOrder ?? 0),
+    createdAt: createdAt || '',
     raw: item,
   };
 }
@@ -1263,7 +1280,7 @@ async function createTask(task){
   }
 
   const { siteId, listId } = APP.cfg;
-  const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/items`;
+  const url = `https://graph.microsoft.com/v1.0/sites/${encodeURIComponent(siteId)}/lists/${encodeURIComponent(listId)}/items?$expand=fields`;
   const body = { fields: mapToFields(task) };
   // Extra bulletproof: if no link is provided, make sure NO link-like field is sent
   // (some older builds or tenant-specific fields can otherwise trigger a 400).
