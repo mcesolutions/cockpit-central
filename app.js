@@ -144,7 +144,8 @@ function ensureModalStyles(){
   .cc-datebtn{width:44px;height:44px;border-radius:14px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:#fff;cursor:pointer;display:grid;place-items:center}
   .cc-datebtn:hover{background:rgba(255,255,255,.10)}
   .cc-datebtn:disabled{opacity:.45;cursor:not-allowed}
-  .cc-datepick{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+  /* Hidden native date input used to trigger the browser date picker */
+  .cc-datepick{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none;left:0;top:0}
   .cc-textarea{min-height:98px;resize:vertical}
   .cc-help{font-size:12px;color:rgba(255,255,255,.55)}
   .cc-req{color:rgba(255,150,140,.95);font-weight:700;margin-left:6px}
@@ -225,14 +226,11 @@ function openNewTaskModal(poleKey){
           <div class="cc-field">
             <div class="cc-label">Échéance</div>
             <div class="cc-datewrap">
-              <input class="cc-input" type="text" name="due" inputmode="numeric" placeholder="aaaa-MM-jj" autocomplete="off" ${APP.fieldInternal?.DueDate ? '' : 'disabled'} />
-              <button class="cc-datebtn" type="button" data-datebtn title="Choisir une date" ${APP.fieldInternal?.DueDate ? '' : 'disabled'}>${icon('calendar')}</button>
-              <input class="cc-datepick" type="date" name="duePicker" ${APP.fieldInternal?.DueDate ? '' : 'disabled'} />
+              <button class="cc-datebtn" type="button" data-datebtn title="Choisir une date">${icon('calendar')}</button>
+              <input class="cc-input" type="text" name="due" inputmode="numeric" placeholder="aaaa-MM-jj" autocomplete="off" />
+              <input class="cc-datepick" type="date" name="duePicker" />
             </div>
-            ${APP.fieldInternal?.DueDate
-              ? `<div class="cc-help">Optionnel — calendrier au clic ou saisie manuelle au format <b>aaaa-MM-jj</b>.</div>`
-              : `<div class="cc-help">Colonne Échéance non détectée dans la liste : ce champ est désactivé.</div>`
-            }
+            <div class="cc-help">Optionnel — calendrier au clic ou saisie manuelle au format <b>aaaa-MM-jj</b>. Si ta liste n’a pas de colonne Échéance, la date sera ignorée automatiquement.</div>
           </div>
 
           <div class="cc-field" style="grid-column:1 / -1;">
@@ -262,6 +260,26 @@ function openNewTaskModal(poleKey){
     const dueTextEl = backdrop.querySelector('input[name="due"]');
     const duePickerEl = backdrop.querySelector('input[name="duePicker"]');
     const dueBtnEl = backdrop.querySelector('[data-datebtn]');
+
+    // User-friendly date entry: allow digits only and auto-format to YYYY-MM-DD.
+    // Example: 20250612 -> 2025-06-12
+    const digitsToISO = (digits) => {
+      const d = String(digits || '').replace(/\D/g,'').slice(0,8);
+      if (d.length <= 4) return d;
+      if (d.length <= 6) return `${d.slice(0,4)}-${d.slice(4)}`;
+      return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6)}`;
+    };
+
+    const normalizeDueText = () => {
+      if (!dueTextEl) return;
+      const before = String(dueTextEl.value || '');
+      const digits = before.replace(/\D/g,'').slice(0,8);
+      const formatted = digitsToISO(digits);
+      if (before !== formatted) {
+        dueTextEl.value = formatted;
+      }
+      return formatted;
+    };
 
     const isValidISODate = (s) => {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
@@ -308,15 +326,18 @@ function openNewTaskModal(poleKey){
     }
 
     if (dueTextEl) {
-      // If user types manually, keep picker in sync when format is valid
+      // If user types manually, accept digits only and auto-format, then keep picker in sync when valid.
       dueTextEl.addEventListener('input', () => {
-        syncDueTextToPicker();
+        const v = normalizeDueText();
+        if (v && isValidISODate(v)) syncDueTextToPicker();
+        if (!v && duePickerEl) duePickerEl.value = '';
       });
       dueTextEl.addEventListener('blur', () => {
-        const v = String(dueTextEl.value || '').trim();
+        const v = String(normalizeDueText() || '').trim();
         if (!v) { if (duePickerEl) duePickerEl.value=''; return; }
-        if (!isValidISODate(v)) {
-          toast('Format attendu pour Échéance : aaaa-MM-jj', 'warn');
+        // Optional field: either empty, or a full valid ISO date.
+        if (v.length !== 10 || !isValidISODate(v)) {
+          toast('Échéance : saisis 8 chiffres (ex: 20250612) ou utilise le calendrier.', 'warn');
           dueTextEl.focus();
           dueTextEl.select?.();
           return;
@@ -352,12 +373,18 @@ function openNewTaskModal(poleKey){
 
       const status = (backdrop.querySelector('input[name="status"]:checked')?.value) || defaultStatus;
       const priority = (backdrop.querySelector('input[name="priority"]:checked')?.value) || defaultPriority;
-      const dueRaw = (dueTextEl?.value) || (duePickerEl?.value) || '';
-      const due = String(dueRaw || '').trim();
+      // Due date: optional. Accept digits-only entry and format automatically.
+      const due = String((normalizeDueText?.() ?? dueTextEl?.value ?? duePickerEl?.value ?? '') || '').trim();
       const notes = String(backdrop.querySelector('textarea[name="notes"]')?.value || '').trim();
 
       // Store due date as ISO-ish for Graph; keep it simple for SharePoint date columns
-      const dueDate = (due && isValidISODate(due)) ? `${due}T00:00:00Z` : '';
+      if (due && !isValidISODate(due)) {
+        toast('Échéance : saisis 8 chiffres (ex: 20250612) ou utilise le calendrier.', 'warn');
+        dueTextEl?.focus?.();
+        dueTextEl?.select?.();
+        return;
+      }
+      const dueDate = due ? `${due}T00:00:00Z` : '';
 
       close();
       resolve({
