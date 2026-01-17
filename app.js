@@ -160,8 +160,26 @@ function ensureModalStyles(){
   document.head.appendChild(s);
 }
 
+function ensureEnhancementStyles(){
+  if (document.getElementById('cc-enhance-styles')) return;
+  const s = document.createElement('style');
+  s.id = 'cc-enhance-styles';
+  s.textContent = `
+    /* Make Kanban cards feel actionable */
+    .cardtask{cursor:pointer;}
+    .cardtask:hover{transform:translateY(-1px); box-shadow:0 10px 28px rgba(0,0,0,.28);}
+
+    /* Editable selects in table view */
+    .cell-select{width:100%;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:#fff;padding:8px 10px;font:inherit;outline:none}
+    .cell-select:focus{border-color:rgba(115,233,255,.35);box-shadow:0 0 0 4px rgba(83,199,255,.10)}
+    .cell-select option{color:#111}
+  `;
+  document.head.appendChild(s);
+}
+
 function openNewTaskModal(poleKey){
   ensureModalStyles();
+  ensureEnhancementStyles();
   const p = poleMeta(poleKey);
 
   // default choices
@@ -261,10 +279,67 @@ function openNewTaskModal(poleKey){
     const duePickerEl = backdrop.querySelector('input[name="duePicker"]');
     const dueBtnEl = backdrop.querySelector('[data-datebtn]');
 
-    // User-friendly date entry: allow digits only and auto-format to YYYY-MM-DD.
+    // User-friendly date entry:
+    // - accept digits only
+    // - progressively restrict month/day ranges
+    // - auto-format to YYYY-MM-DD
     // Example: 20250612 -> 2025-06-12
+    const maxDaysInMonth = (y, m) => {
+      if (!y || !m) return 31;
+      const yy = Number(y);
+      const mm = Number(m);
+      if (!yy || !mm || mm < 1 || mm > 12) return 31;
+      return new Date(yy, mm, 0).getDate();
+    };
+
+    const sanitizeDateDigits = (digitsRaw) => {
+      const raw = String(digitsRaw || '').replace(/\D/g,'').slice(0,8);
+      let out = '';
+      for (const ch of raw) {
+        const cand = out + ch;
+        const len = cand.length;
+        // Year: accept 4 digits freely
+        if (len <= 4) { out = cand; continue; }
+
+        // Month tens: only 0 or 1
+        if (len === 5) {
+          if (ch === '0' || ch === '1') out = cand;
+          continue;
+        }
+
+        // Month ones: ensure 01..12
+        if (len === 6) {
+          const mm = Number(cand.slice(4,6));
+          if (mm >= 1 && mm <= 12) out = cand;
+          continue;
+        }
+
+        // Day tens: depends on month/year max days; never allow > 3
+        if (len === 7) {
+          const yy = cand.slice(0,4);
+          const mm = cand.slice(4,6);
+          const maxD = maxDaysInMonth(yy, mm);
+          const maxTens = Math.floor(maxD / 10); // e.g., 31 -> 3, 29 -> 2
+          const tens = Number(ch);
+          if (tens >= 0 && tens <= Math.min(3, maxTens)) out = cand;
+          continue;
+        }
+
+        // Day ones: ensure 01..maxD
+        if (len === 8) {
+          const yy = cand.slice(0,4);
+          const mm = cand.slice(4,6);
+          const dd = Number(cand.slice(6,8));
+          const maxD = maxDaysInMonth(yy, mm);
+          if (dd >= 1 && dd <= maxD) out = cand;
+          continue;
+        }
+      }
+      return out;
+    };
+
     const digitsToISO = (digits) => {
-      const d = String(digits || '').replace(/\D/g,'').slice(0,8);
+      const d = sanitizeDateDigits(digits);
       if (d.length <= 4) return d;
       if (d.length <= 6) return `${d.slice(0,4)}-${d.slice(4)}`;
       return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6)}`;
@@ -273,7 +348,7 @@ function openNewTaskModal(poleKey){
     const normalizeDueText = () => {
       if (!dueTextEl) return;
       const before = String(dueTextEl.value || '');
-      const digits = before.replace(/\D/g,'').slice(0,8);
+      const digits = sanitizeDateDigits(before);
       const formatted = digitsToISO(digits);
       if (before !== formatted) {
         dueTextEl.value = formatted;
@@ -415,6 +490,281 @@ function openNewTaskModal(poleKey){
     });
     // focus title for speed
     setTimeout(() => titleEl?.focus(), 0);
+  });
+}
+
+function openEditTaskModal(task){
+  ensureModalStyles();
+  ensureEnhancementStyles();
+  const poleKey = task?.pole || '';
+  const p = poleMeta(poleKey);
+
+  const statuses = (APP.cfg.statuses || [
+    { key: 'Backlog', label: 'Backlog' },
+    { key: 'EnCours', label: 'En cours' },
+    { key: 'EnAttente', label: 'En attente' },
+    { key: 'Termine', label: 'Terminé' },
+  ]);
+  const priorities = (APP.cfg.priorities || [
+    { key: 'P1', label: 'P1 (Urgent)' },
+    { key: 'P2', label: 'P2 (Normal)' },
+    { key: 'P3', label: 'P3 (Bas)' },
+  ]);
+
+  const defaultStatus = task?.status || 'Backlog';
+  const defaultPriority = task?.priority || 'P2';
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'cc-modal-backdrop';
+  backdrop.innerHTML = `
+    <div class="cc-modal" role="dialog" aria-modal="true" aria-label="Modifier tâche">
+      <div class="cc-modal__head">
+        <div>
+          <div class="cc-modal__title">Modifier la tâche • ${escapeHtml(p.label || poleKey)}</div>
+          <div class="cc-modal__sub">Le <b>Titre</b> reste requis. Le reste est optionnel.</div>
+        </div>
+        <button class="cc-modal__close" type="button" data-close aria-label="Fermer">✕</button>
+      </div>
+      <form class="cc-modal__body" data-form>
+        <div class="cc-grid">
+          <div class="cc-field" style="grid-column:1 / -1;">
+            <div class="cc-label">Titre<span class="cc-req">*</span></div>
+            <input class="cc-input" name="title" placeholder="Titre" autocomplete="off" />
+            <div class="cc-error" data-err style="display:none"></div>
+          </div>
+
+          <div class="cc-field">
+            <div class="cc-label">Statut</div>
+            <div class="cc-seg" data-seg="status">
+              ${statuses.map(s => `
+                <label class="cc-chip" data-value="${escapeHtml(s.key)}" data-active="${s.key===defaultStatus?'1':'0'}">
+                  <input type="radio" name="status" value="${escapeHtml(s.key)}" ${s.key===defaultStatus?'checked':''} />
+                  <span>${escapeHtml(s.label)}</span>
+                </label>
+              `).join('')}
+            </div>
+          </div>
+
+          <div class="cc-field">
+            <div class="cc-label">Priorité</div>
+            <div class="cc-seg" data-seg="priority">
+              ${priorities.map(pr => `
+                <label class="cc-chip" data-value="${escapeHtml(pr.key)}" data-active="${pr.key===defaultPriority?'1':'0'}">
+                  <input type="radio" name="priority" value="${escapeHtml(pr.key)}" ${pr.key===defaultPriority?'checked':''} />
+                  <span>${escapeHtml(pr.label || pr.key)}</span>
+                </label>
+              `).join('')}
+            </div>
+          </div>
+
+          <div class="cc-field">
+            <div class="cc-label">Échéance</div>
+            <div class="cc-datewrap">
+              <button class="cc-datebtn" type="button" data-datebtn title="Choisir une date">${icon('calendar')}</button>
+              <input class="cc-input" type="text" name="due" inputmode="numeric" placeholder="aaaa-MM-jj" autocomplete="off" />
+              <input class="cc-datepick" type="date" name="duePicker" />
+            </div>
+            <div class="cc-help">Optionnel — 8 chiffres (ex: 20250612) ou calendrier.</div>
+          </div>
+
+          <div class="cc-field" style="grid-column:1 / -1;">
+            <div class="cc-label">Notes</div>
+            <textarea class="cc-textarea" name="notes" placeholder="Notes…"></textarea>
+          </div>
+        </div>
+      </form>
+      <div class="cc-modal__foot">
+        <button class="pill" type="button" data-cancel>Annuler</button>
+        <button class="pill pill--primary" type="button" data-submit>Enregistrer</button>
+      </div>
+    </div>
+  `;
+
+  function close(){ backdrop.remove(); }
+
+  return new Promise((resolve) => {
+    document.body.appendChild(backdrop);
+
+    const form = backdrop.querySelector('[data-form]');
+    const titleEl = backdrop.querySelector('input[name="title"]');
+    const errEl = backdrop.querySelector('[data-err]');
+    const dueTextEl = backdrop.querySelector('input[name="due"]');
+    const duePickerEl = backdrop.querySelector('input[name="duePicker"]');
+    const dueBtnEl = backdrop.querySelector('[data-datebtn]');
+
+    // Prefill
+    if (titleEl) titleEl.value = String(task?.title || '');
+    const initialDue = task?.dueDate ? fmtDate(task.dueDate) : '';
+    if (dueTextEl) dueTextEl.value = initialDue;
+    if (duePickerEl) duePickerEl.value = initialDue;
+    const notesEl = backdrop.querySelector('textarea[name="notes"]');
+    if (notesEl) notesEl.value = String(task?.notes || '');
+
+    // Reuse the same input behavior as the create modal
+    const maxDaysInMonth = (y, m) => {
+      if (!y || !m) return 31;
+      const yy = Number(y);
+      const mm = Number(m);
+      if (!yy || !mm || mm < 1 || mm > 12) return 31;
+      return new Date(yy, mm, 0).getDate();
+    };
+    const sanitizeDateDigits = (digitsRaw) => {
+      const raw = String(digitsRaw || '').replace(/\D/g,'').slice(0,8);
+      let out = '';
+      for (const ch of raw) {
+        const cand = out + ch;
+        const len = cand.length;
+        if (len <= 4) { out = cand; continue; }
+        if (len === 5) { if (ch === '0' || ch === '1') out = cand; continue; }
+        if (len === 6) {
+          const mm = Number(cand.slice(4,6));
+          if (mm >= 1 && mm <= 12) out = cand;
+          continue;
+        }
+        if (len === 7) {
+          const yy = cand.slice(0,4);
+          const mm = cand.slice(4,6);
+          const maxD = maxDaysInMonth(yy, mm);
+          const maxTens = Math.floor(maxD / 10);
+          const tens = Number(ch);
+          if (tens >= 0 && tens <= Math.min(3, maxTens)) out = cand;
+          continue;
+        }
+        if (len === 8) {
+          const yy = cand.slice(0,4);
+          const mm = cand.slice(4,6);
+          const dd = Number(cand.slice(6,8));
+          const maxD = maxDaysInMonth(yy, mm);
+          if (dd >= 1 && dd <= maxD) out = cand;
+          continue;
+        }
+      }
+      return out;
+    };
+    const digitsToISO = (digits) => {
+      const d = sanitizeDateDigits(digits);
+      if (d.length <= 4) return d;
+      if (d.length <= 6) return `${d.slice(0,4)}-${d.slice(4)}`;
+      return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6)}`;
+    };
+    const normalizeDueText = () => {
+      if (!dueTextEl) return '';
+      const before = String(dueTextEl.value || '');
+      const digits = sanitizeDateDigits(before);
+      const formatted = digitsToISO(digits);
+      if (before !== formatted) dueTextEl.value = formatted;
+      return formatted;
+    };
+    const isValidISODate = (s) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+      const d = new Date(s + 'T00:00:00Z');
+      if (isNaN(d.getTime())) return false;
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth()+1).padStart(2,'0');
+      const da = String(d.getUTCDate()).padStart(2,'0');
+      return `${y}-${m}-${da}` === s;
+    };
+    const syncDueTextToPicker = () => {
+      if (!dueTextEl || !duePickerEl) return;
+      const v = String(dueTextEl.value || '').trim();
+      if (!v) { duePickerEl.value = ''; return; }
+      if (isValidISODate(v)) duePickerEl.value = v;
+    };
+    const syncDuePickerToText = () => {
+      if (!dueTextEl || !duePickerEl) return;
+      if (duePickerEl.value) dueTextEl.value = duePickerEl.value;
+    };
+    if (dueBtnEl && duePickerEl) {
+      dueBtnEl.addEventListener('click', () => {
+        try {
+          if (typeof duePickerEl.showPicker === 'function') duePickerEl.showPicker();
+          else { duePickerEl.focus(); duePickerEl.click(); }
+        } catch { try { duePickerEl.focus(); duePickerEl.click(); } catch {} }
+      });
+    }
+    duePickerEl?.addEventListener('change', () => syncDuePickerToText());
+    dueTextEl?.addEventListener('input', () => {
+      const v = normalizeDueText();
+      if (v && isValidISODate(v)) syncDueTextToPicker();
+      if (!v && duePickerEl) duePickerEl.value = '';
+    });
+    dueTextEl?.addEventListener('blur', () => {
+      const v = String(normalizeDueText() || '').trim();
+      if (!v) { if (duePickerEl) duePickerEl.value = ''; return; }
+      if (v.length !== 10 || !isValidISODate(v)) {
+        toast('Échéance : saisis 8 chiffres (ex: 20250612) ou utilise le calendrier.', 'warn');
+        dueTextEl.focus();
+        dueTextEl.select?.();
+        return;
+      }
+      syncDueTextToPicker();
+    });
+
+    const setActive = (segName, value) => {
+      backdrop.querySelectorAll(`[data-seg="${segName}"] .cc-chip`).forEach(ch => {
+        ch.dataset.active = (ch.dataset.value === value) ? '1' : '0';
+      });
+    };
+    backdrop.querySelectorAll('[data-seg] .cc-chip').forEach(ch => {
+      ch.addEventListener('click', () => {
+        const group = ch.closest('[data-seg]')?.dataset?.seg;
+        const val = ch.dataset.value;
+        const input = ch.querySelector('input');
+        if (input) input.checked = true;
+        if (group) setActive(group, val);
+      });
+    });
+
+    const submit = async () => {
+      const title = String(titleEl?.value || '').trim();
+      if (!title) {
+        errEl.textContent = 'Le titre est obligatoire.';
+        errEl.style.display = '';
+        titleEl?.focus?.();
+        return;
+      }
+      errEl.style.display = 'none';
+
+      const status = (backdrop.querySelector('input[name="status"]:checked')?.value) || defaultStatus;
+      const priority = (backdrop.querySelector('input[name="priority"]:checked')?.value) || defaultPriority;
+      const due = String((normalizeDueText?.() ?? dueTextEl?.value ?? duePickerEl?.value ?? '') || '').trim();
+      const notes = String(backdrop.querySelector('textarea[name="notes"]')?.value || '').trim();
+
+      if (due && !isValidISODate(due)) {
+        toast('Échéance : saisis 8 chiffres (ex: 20250612) ou utilise le calendrier.', 'warn');
+        dueTextEl?.focus?.();
+        dueTextEl?.select?.();
+        return;
+      }
+
+      const dueDate = due ? `${due}T00:00:00Z` : null;
+
+      close();
+      resolve({
+        id: task.id,
+        title,
+        status,
+        priority,
+        dueDate,
+        notes,
+      });
+    };
+
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) { close(); resolve(null); } });
+    backdrop.querySelector('[data-close]')?.addEventListener('click', () => { close(); resolve(null); });
+    backdrop.querySelector('[data-cancel]')?.addEventListener('click', () => { close(); resolve(null); });
+    backdrop.querySelector('[data-submit]')?.addEventListener('click', submit);
+    form?.addEventListener('submit', (e) => { e.preventDefault(); submit(); });
+
+    window.addEventListener('keydown', function onKey(ev){
+      if (ev.key === 'Escape') {
+        window.removeEventListener('keydown', onKey);
+        close();
+        resolve(null);
+      }
+    });
+
+    setTimeout(() => titleEl?.focus?.(), 0);
   });
 }
 
@@ -1250,9 +1600,40 @@ function viewPoleKanban(tasks){
   // wire DnD after render
   setTimeout(() => {
     $$('.cardtask').forEach(el => {
+      let didDrag = false;
       el.addEventListener('dragstart', (e) => {
+        didDrag = true;
         const id = el.dataset.id;
         e.dataTransfer.setData('text/plain', id);
+      });
+      el.addEventListener('dragend', () => {
+        // let the click event (if any) fire first, then reset
+        setTimeout(() => { didDrag = false; }, 0);
+      });
+      el.addEventListener('click', async () => {
+        if (didDrag) return;
+        const id = el.dataset.id;
+        const t = APP.tasks.find(x => x.id === id);
+        if (!t) return;
+        try {
+          if (!APP.account) { await login(); }
+          await loadListColumns();
+          const edited = await openEditTaskModal(t);
+          if (!edited) return;
+          await updateTaskFields(id, {
+            [FIELD.Title]: edited.title,
+            [FIELD.Status]: edited.status,
+            [FIELD.Priority]: edited.priority,
+            [FIELD.DueDate]: edited.dueDate,
+            [FIELD.Notes]: edited.notes,
+          });
+          await loadTasks();
+          toast('Tâche mise à jour ✅', 'good');
+          render();
+        } catch (err) {
+          console.error(err);
+          toast('Erreur modification (voir console)', 'bad');
+        }
       });
     });
 
@@ -1288,11 +1669,31 @@ function viewPoleKanban(tasks){
 }
 
 function viewPoleTable(tasks){
+  const statuses = (APP.cfg.statuses || [
+    { key: 'Backlog', label: 'Backlog' },
+    { key: 'EnCours', label: 'En cours' },
+    { key: 'EnAttente', label: 'En attente' },
+    { key: 'Termine', label: 'Terminé' },
+  ]);
+  const priorities = (APP.cfg.priorities || [
+    { key: 'P1', label: 'P1 (Urgent)' },
+    { key: 'P2', label: 'P2 (Normal)' },
+    { key: 'P3', label: 'P3 (Bas)' },
+  ]);
+
   const rows = tasks.map(t => `
     <tr>
       <td><div class="cell-edit" contenteditable="true" data-id="${escapeHtml(t.id)}" data-field="${FIELD.Title}">${escapeHtml(t.title)}</div></td>
-      <td>${escapeHtml(t.status)}</td>
-      <td>${escapeHtml(t.priority)}</td>
+      <td>
+        <select class="cell-select" data-id="${escapeHtml(t.id)}" data-field="${FIELD.Status}">
+          ${statuses.map(s => `<option value="${escapeHtml(s.key)}" ${s.key===t.status?'selected':''}>${escapeHtml(s.label || s.key)}</option>`).join('')}
+        </select>
+      </td>
+      <td>
+        <select class="cell-select" data-id="${escapeHtml(t.id)}" data-field="${FIELD.Priority}">
+          ${priorities.map(p => `<option value="${escapeHtml(p.key)}" ${p.key===t.priority?'selected':''}>${escapeHtml(p.label || p.key)}</option>`).join('')}
+        </select>
+      </td>
       <td><div class="cell-edit" contenteditable="true" data-id="${escapeHtml(t.id)}" data-field="${FIELD.DueDate}">${escapeHtml(t.dueDate ? fmtDate(t.dueDate) : '')}</div></td>
       <td><div class="cell-edit" contenteditable="true" data-id="${escapeHtml(t.id)}" data-field="${FIELD.Notes}">${escapeHtml(t.notes || '')}</div></td>
     </tr>
@@ -1300,13 +1701,40 @@ function viewPoleTable(tasks){
 
   // wire inline edits
   setTimeout(() => {
+    $$('.cell-select').forEach(el => {
+      el.addEventListener('change', async () => {
+        const id = el.dataset.id;
+        const field = el.dataset.field;
+        const val = el.value;
+        try {
+          await updateTaskFields(id, { [field]: val });
+          toast('Enregistré ✅', 'good');
+          await loadTasks();
+          render();
+        } catch (e) {
+          console.error(e);
+          toast('Erreur enregistrement', 'bad');
+        }
+      });
+    });
+
     $$('.cell-edit').forEach(el => {
       const save = debounce(async () => {
         const id = el.dataset.id;
         const field = el.dataset.field;
         let val = el.textContent.trim();
         if (field === FIELD.DueDate) {
-          val = val ? val : null;
+          // Accept YYYY-MM-DD or 8 digits, store as ISO datetime (date-only).
+          const digits = String(val || '').replace(/\D/g,'');
+          if (!digits) {
+            val = null;
+          } else {
+            const d = digits.slice(0,8);
+            const iso = d.length === 8
+              ? `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`
+              : String(val || '').trim();
+            val = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso}T00:00:00Z` : null;
+          }
         }
         try {
           await updateTaskFields(id, { [field]: val });
